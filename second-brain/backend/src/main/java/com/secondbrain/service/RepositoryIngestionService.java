@@ -130,25 +130,17 @@ public class RepositoryIngestionService {
             result.put("codeFilesEmbedded", codeEmbedded);
             log.info("Embedded {} code file summaries", codeEmbedded);
 
-            // Step 6: Create knowledge graph nodes
-            result.put("step", "building_graph");
-            try {
-                int graphNodes = buildKnowledgeGraph(clone, bootstrap, codeStructure);
-                result.put("graphNodesCreated", graphNodes);
-            } catch (Exception e) {
-                log.warn("Graph building failed (non-fatal): {}", e.getMessage());
-                result.put("graphNodesCreated", 0);
-                result.put("graphError", e.getMessage());
-            }
-
-            // Step 7: Store repository entity in PostgreSQL
+            // Step 6: Store Project and Repository in PostgreSQL
             result.put("step", "persisting");
             String primaryLang = bootstrap.getLanguages().isEmpty() ? "Unknown" : bootstrap.getLanguages().get(0);
 
-            // Create or find project
+            // Guarantee project exists where project name == repository name
             Project project = null;
             if (projectId != null) {
                 project = projectRepository.findById(projectId).orElse(null);
+            }
+            if (project == null) {
+                project = projectRepository.findByName(clone.repoName()).orElse(null);
             }
             if (project == null) {
                 project = Project.builder()
@@ -158,26 +150,43 @@ public class RepositoryIngestionService {
                     .path(clone.localPath())
                     .build();
                 project = projectRepository.save(project);
-                log.info("Created project: {} ({})", project.getName(), project.getId());
+                log.info("Created project for repository: {} ({})", project.getName(), project.getId());
+            } else {
+                project.setPath(clone.localPath());
+                project = projectRepository.save(project);
             }
             result.put("projectId", project.getId().toString());
             result.put("projectName", project.getName());
 
-            RepositoryEntity repoEntity = RepositoryEntity.builder()
-                .name(clone.repoName())
-                .url(clone.remoteUrl())
-                .path(clone.localPath())
-                .defaultBranch(clone.defaultBranch())
-                .primaryLanguage(primaryLang)
-                .description(String.format("GitHub: %s/%s | Languages: %s | Frameworks: %s",
-                    clone.owner(), clone.repoName(),
-                    String.join(", ", bootstrap.getLanguages()),
-                    String.join(", ", bootstrap.getFrameworks())))
-                .project(project)
-                .build();
+            // Check if repo already exists by URL or name, else create new
+            RepositoryEntity repoEntity = repositoryRepository.findByUrl(clone.remoteUrl())
+                .or(() -> repositoryRepository.findByName(clone.repoName()))
+                .orElseGet(() -> RepositoryEntity.builder().name(clone.repoName()).build());
+
+            repoEntity.setName(clone.repoName());
+            repoEntity.setUrl(clone.remoteUrl());
+            repoEntity.setPath(clone.localPath());
+            repoEntity.setDefaultBranch(clone.defaultBranch());
+            repoEntity.setPrimaryLanguage(primaryLang);
+            repoEntity.setDescription(String.format("GitHub: %s/%s | Languages: %s | Frameworks: %s",
+                clone.owner(), clone.repoName(),
+                String.join(", ", bootstrap.getLanguages()),
+                String.join(", ", bootstrap.getFrameworks())));
+            repoEntity.setProject(project);
 
             repoEntity = repositoryRepository.save(repoEntity);
             result.put("repositoryId", repoEntity.getId().toString());
+
+            // Step 7: Create knowledge graph nodes and project linkage
+            result.put("step", "building_graph");
+            try {
+                int graphNodes = buildKnowledgeGraph(clone, bootstrap, codeStructure, project);
+                result.put("graphNodesCreated", graphNodes);
+            } catch (Exception e) {
+                log.warn("Graph building failed (non-fatal): {}", e.getMessage());
+                result.put("graphNodesCreated", 0);
+                result.put("graphError", e.getMessage());
+            }
 
             long elapsed = System.currentTimeMillis() - startTime;
             result.put("status", "ingested");
@@ -216,10 +225,27 @@ public class RepositoryIngestionService {
 
     private int buildKnowledgeGraph(GitHubCloneService.CloneResult clone,
             RepositoryBootstrapService.BootstrapResult bootstrap,
-            List<Map<String, Object>> codeStructure) {
+            List<Map<String, Object>> codeStructure,
+            Project project) {
 
         int nodeCount = 0;
         String repoNodeId = clone.owner() + "/" + clone.repoName();
+        String projNodeId = project != null ? project.getName() : clone.repoName();
+
+        // Batch 0: Project node and relationship
+        if (project != null) {
+            graphService.batchCreateNodes("Project", List.of(
+                Map.of("id", projNodeId, "props", Map.of(
+                    "name", project.getName(),
+                    "description", project.getDescription() != null ? project.getDescription() : "",
+                    "path", project.getPath() != null ? project.getPath() : ""
+                ))
+            ));
+            graphService.batchCreateRelationshipsTyped("BELONGS_TO", List.of(
+                Map.of("fromId", repoNodeId, "toId", projNodeId, "props", Map.of())
+            ));
+            nodeCount += 2;
+        }
 
         // Batch 1: Repository node
         graphService.batchCreateNodes("Repository", List.of(
