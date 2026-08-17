@@ -299,16 +299,13 @@ public class AgentBridgeService {
 
                     totalFilesCount = allFiles.size();
 
-                    // Prioritize source and configuration files
+                    // Prioritize architecture-critical configuration, source, and infra files
                     allFiles.stream()
                             .sorted((a, b) -> {
-                                String sa = a.toString().toLowerCase();
-                                String sb = b.toString().toLowerCase();
-                                boolean aImp = sa.endsWith(".java") || sa.endsWith(".py") || sa.endsWith(".ts") || sa.endsWith(".js") || sa.endsWith(".html") || sa.endsWith("pom.xml") || sa.endsWith("dockerfile");
-                                boolean bImp = sb.endsWith(".java") || sb.endsWith(".py") || sb.endsWith(".ts") || sb.endsWith(".js") || sb.endsWith(".html") || sb.endsWith("pom.xml") || sb.endsWith("dockerfile");
-                                if (aImp && !bImp) return -1;
-                                if (!aImp && bImp) return 1;
-                                return sa.compareTo(sb);
+                                int scoreA = scoreFileImportance(a.toString());
+                                int scoreB = scoreFileImportance(b.toString());
+                                if (scoreA != scoreB) return Integer.compare(scoreB, scoreA);
+                                return a.toString().compareToIgnoreCase(b.toString());
                             })
                             .limit(sampleLimit)
                             .forEach(f -> workspaceFiles.add(p.relativize(f).toString()));
@@ -534,6 +531,34 @@ public class AgentBridgeService {
             if (byName.isPresent()) return byName.get();
         }
         return null;
+    }
+
+    private int scoreFileImportance(String pathStr) {
+        String lower = pathStr.toLowerCase();
+        // 1. Core build & runtime configurations
+        if (lower.endsWith("pom.xml") || lower.endsWith("build.gradle") || lower.endsWith("build.gradle.kts") ||
+            lower.endsWith("package.json") || lower.endsWith("tsconfig.json") || lower.endsWith("dockerfile") ||
+            lower.endsWith("docker-compose.yml") || lower.endsWith("docker-compose.yaml")) {
+            return 100;
+        }
+        // 2. Spring & Application configs & migrations
+        if (lower.endsWith("application.yml") || lower.endsWith("application.yaml") || lower.endsWith("application.properties") ||
+            lower.contains("/application-") || lower.endsWith("schema.sql") || lower.endsWith("data.sql") || lower.endsWith(".sql")) {
+            return 90;
+        }
+        // 3. Kubernetes / Helm / Cloud manifests
+        if (lower.contains("/k8s/") || lower.contains("/helm/") || lower.contains("/argocd/") || lower.contains("/docker/")) {
+            return 80;
+        }
+        // 4. Primary source files
+        if (lower.endsWith(".java") || lower.endsWith(".py") || lower.endsWith(".ts") || lower.endsWith(".js") || lower.endsWith(".go") || lower.endsWith(".rs")) {
+            return 70;
+        }
+        // 5. Documentation & web UI
+        if (lower.endsWith("readme.md") || lower.endsWith(".md") || lower.endsWith(".html")) {
+            return 50;
+        }
+        return 10;
     }
 
     @Data

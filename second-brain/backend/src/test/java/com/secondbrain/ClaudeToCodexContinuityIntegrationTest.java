@@ -144,7 +144,14 @@ class ClaudeToCodexContinuityIntegrationTest {
                         .param("repo", repo.getId().toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.project.name").value("CoreBanking"))
+                .andExpect(jsonPath("$.repository.name").value("auth-service"))
                 .andExpect(jsonPath("$.workspace.totalFilesCount").exists())
+                .andExpect(jsonPath("$.workspace.sampled").exists())
+                .andExpect(jsonPath("$.workspace.sampleLimit").value(40))
+                .andExpect(jsonPath("$.workspace.maxDepth").value(5))
+                .andExpect(jsonPath("$.workspace.files").isArray())
+                .andExpect(jsonPath("$.recentAttempts", org.hamcrest.Matchers.hasSize(2)))
+                .andExpect(jsonPath("$.openTasks", org.hamcrest.Matchers.hasSize(1)))
                 .andExpect(jsonPath("$.briefing").isNotEmpty())
                 .andReturn();
 
@@ -153,5 +160,7 @@ class ClaudeToCodexContinuityIntegrationTest {
         System.out.println(wsBody);
         assertTrue(wsBody.contains("CoreBanking"));
         assertTrue(wsBody.contains("auth-service"));
+        assertTrue(wsBody.contains("Workspace:"));
+        assertTrue(wsBody.contains("files tracked"));
     }
 }
