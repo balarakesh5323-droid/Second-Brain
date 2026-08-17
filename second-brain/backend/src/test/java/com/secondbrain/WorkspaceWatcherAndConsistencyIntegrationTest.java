@@ -5,6 +5,7 @@ import com.secondbrain.common.entity.Project;
 import com.secondbrain.common.entity.RepositoryEntity;
 import com.secondbrain.common.repository.ProjectRepository;
 import com.secondbrain.common.repository.RepositoryEntityRepository;
+import com.secondbrain.service.GitService;
 import com.secondbrain.service.SemanticSearchService;
 import com.secondbrain.service.WorkspaceWatcherService;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,6 +31,9 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
 
     @Autowired
     private SemanticSearchService semanticSearchService;
+
+    @Autowired
+    private GitService gitService;
 
     @Autowired
     private ProjectRepository projectRepository;
@@ -80,16 +85,31 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     }
 
     @Test
-    @DisplayName("2. Scoped Semantic Search respects repository boundaries without throwing exceptions")
-    void testScopedSearchExecution() {
-        List<SearchResult> results = semanticSearchService.searchScoped(
-                "AuthController", "symbol_knowledge", testProject.getId().toString(), repoA.getId().toString(), 10);
-
-        assertThat(results).isNotNull();
+    @DisplayName("2. Working Tree Status calculation handles non-git / git workspaces gracefully")
+    void testWorkingTreeStatus() {
+        GitService directGitService = new GitService();
+        Map<String, Object> status = directGitService.getWorkingTreeStatus("/tmp/test-project/backend-api");
+        assertThat(status).isNotNull();
+        assertThat(status).containsKey("state");
+        assertThat(status.get("state")).isIn("CLEAN", "MODIFIED");
     }
 
     @Test
-    @DisplayName("3. Hierarchical weighted search executes across repository, project, and global scopes")
+    @DisplayName("3. Scoped Semantic Search respects repository boundaries")
+    void testScopedSearchExecution() {
+        List<SearchResult> resultsA = semanticSearchService.searchScoped(
+                "AuthController", "symbol_knowledge", testProject.getId().toString(), repoA.getId().toString(), 10);
+
+        assertThat(resultsA).isNotNull();
+
+        List<SearchResult> resultsB = semanticSearchService.searchScoped(
+                "AuthController", "symbol_knowledge", testProject.getId().toString(), repoB.getId().toString(), 10);
+
+        assertThat(resultsB).isNotNull();
+    }
+
+    @Test
+    @DisplayName("4. Hierarchical weighted search executes across repository, project, and global scopes")
     void testHierarchicalWeightedSearch() {
         List<SearchResult> results = semanticSearchService.searchAllCollectionsScoped(
                 "Redis Cache Configuration", testProject.getId().toString(), repoA.getId().toString(), 5);

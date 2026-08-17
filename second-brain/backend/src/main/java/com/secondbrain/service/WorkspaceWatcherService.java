@@ -41,7 +41,6 @@ public class WorkspaceWatcherService {
     private final Map<String, Long> debounceMap = new ConcurrentHashMap<>();
     private final Map<String, Long> fileWriteVersions = new ConcurrentHashMap<>();
     private final Map<String, String> indexedContentHashes = new ConcurrentHashMap<>();
-    private final Map<String, Set<String>> fileTechPatterns = new ConcurrentHashMap<>();
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "workspace-file-watcher");
@@ -68,7 +67,8 @@ public class WorkspaceWatcherService {
             String repositoryPath,
             String branch,
             String headCommit,
-            String workingTreeState
+            String workingTreeState,
+            int modifiedFilesCount
     ) {}
 
     @EventListener(ApplicationReadyEvent.class)
@@ -77,7 +77,10 @@ public class WorkspaceWatcherService {
             this.watchService = FileSystems.getDefault().newWatchService();
             this.running = true;
 
-            // 1. Register all existing repository workspace paths (Priority)
+            // 1. Warm up persistent content hashes from Neo4j (survives restarts)
+            warmupPersistentHashes();
+
+            // 2. Register all existing repository workspace paths (Priority)
             List<RepositoryEntity> repos = repositoryRepository.findAll();
             for (RepositoryEntity repo : repos) {
                 if (repo.getPath() != null && !repo.getPath().isBlank()) {
@@ -85,7 +88,7 @@ public class WorkspaceWatcherService {
                 }
             }
 
-            // 2. Register all existing project workspace paths
+            // 3. Register all existing project workspace paths
             List<Project> projects = projectRepository.findAll();
             for (Project project : projects) {
                 if (project.getPath() != null && !project.getPath().isBlank()) {
@@ -97,6 +100,16 @@ public class WorkspaceWatcherService {
             log.info("Workspace File Watcher initialized and active for {} repos and {} projects", repos.size(), projects.size());
         } catch (Exception e) {
             log.warn("Failed to initialize workspace file watcher: {}", e.getMessage());
+        }
+    }
+
+    private void warmupPersistentHashes() {
+        try {
+            Map<String, String> persistedHashes = graphService.findAllFileHashes("");
+            indexedContentHashes.putAll(persistedHashes);
+            log.info("Warmed up {} persistent content hashes from Neo4j", persistedHashes.size());
+        } catch (Exception e) {
+            log.debug("Hash cache warmup note: {}", e.getMessage());
         }
     }
 
@@ -231,6 +244,7 @@ public class WorkspaceWatcherService {
         String branch = "main";
         String headCommit = "uncommitted";
         String workingTreeState = "CLEAN";
+        int modifiedCount = 0;
 
         try {
             branch = gitService.getCurrentBranch(repoPath);
@@ -238,9 +252,13 @@ public class WorkspaceWatcherService {
             if (!commits.isEmpty()) {
                 headCommit = (String) commits.get(0).getOrDefault("hash", "uncommitted");
             }
+
+            Map<String, Object> status = gitService.getWorkingTreeStatus(repoPath);
+            workingTreeState = (String) status.getOrDefault("state", "CLEAN");
+            modifiedCount = (Integer) status.getOrDefault("modifiedCount", 0);
         } catch (Exception ignored) {}
 
-        return new RepositoryContext(repoId, projectId, repoPath, branch, headCommit, workingTreeState);
+        return new RepositoryContext(repoId, projectId, repoPath, branch, headCommit, workingTreeState, modifiedCount);
     }
 
     public void reconcileRepository(UUID repoId) {
@@ -269,6 +287,9 @@ public class WorkspaceWatcherService {
     private void reconcilePath(Path root, UUID projectId, UUID repoId, String prefix, RepositoryContext ctx) {
         log.info("Starting complete incremental reconciliation for prefix '{}' at {}", prefix, root);
         Set<Path> diskFiles = new HashSet<>();
+
+        // Warm up persistent content hashes for this scope
+        indexedContentHashes.putAll(graphService.findAllFileHashes(prefix));
 
         // 1. Walk entire disk tree unconstrained (filtering ignored dirs)
         try {
@@ -434,12 +455,16 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("Project", projIdStr, "File", fileId, "CONTAINS", null);
             }
 
-            // B. Update Functions in Neo4j & Qdrant
+            // B. Reconcile Functions & Classes (Stale Child Removal)
+            Set<String> currentChildIds = new HashSet<>();
+
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> functions = (List<Map<String, Object>>) structure.getOrDefault("functions", List.of());
             for (Map<String, Object> func : functions) {
                 String funcName = (String) func.getOrDefault("name", "unknown");
                 String funcId = fileId + "::" + funcName;
+                currentChildIds.add(funcId);
+
                 Map<String, Object> props = new HashMap<>();
                 props.put("name", funcName);
                 props.put("file", fileName);
@@ -472,12 +497,13 @@ public class WorkspaceWatcherService {
                 } catch (Exception ignored) {}
             }
 
-            // C. Update Classes in Neo4j
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> classes = (List<Map<String, Object>>) structure.getOrDefault("classes", List.of());
             for (Map<String, Object> cls : classes) {
                 String clsName = (String) cls.getOrDefault("name", "unknown");
                 String clsId = fileId + "::" + clsName;
+                currentChildIds.add(clsId);
+
                 graphService.createNode("Class", clsId, Map.of(
                         "name", clsName,
                         "file", fileName,
@@ -487,8 +513,19 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("File", fileId, "Class", clsId, "DECLARES", null);
             }
 
-            // D. Deduplicated Architectural Pattern Discovery
-            extractArchitecturalPatterns(content, fileName, fileId, projIdStr, repoIdStr);
+            // Cleanup stale children in Neo4j and Qdrant
+            List<String> oldChildren = graphService.getDeclaredChildIds(fileId);
+            for (String oldChildId : oldChildren) {
+                if (!currentChildIds.contains(oldChildId)) {
+                    String pointId = UUID.nameUUIDFromBytes(oldChildId.getBytes()).toString();
+                    vectorStoreService.delete("symbol_knowledge", pointId);
+                    log.info("⚡ Purged stale symbol vector '{}' from Qdrant", oldChildId);
+                }
+            }
+            graphService.deleteStaleChildren(fileId, currentChildIds);
+
+            // C. Reconcile Architectural Technologies (Delete obsolete tech links)
+            extractAndReconcileArchitecturalPatterns(content, fileName, fileId);
 
             // Record successful indexing hash
             indexedContentHashes.put(fileId, contentHash);
@@ -498,7 +535,7 @@ public class WorkspaceWatcherService {
         }
     }
 
-    private void extractArchitecturalPatterns(String content, String fileName, String fileId, String projIdStr, String repoIdStr) {
+    private void extractAndReconcileArchitecturalPatterns(String content, String fileName, String fileId) {
         try {
             Map<String, String> detectedTech = new HashMap<>();
 
@@ -527,22 +564,23 @@ public class WorkspaceWatcherService {
                 detectedTech.put("HTML5 Canvas", "2D Interactive Graphics Engine");
             }
 
-            Set<String> alreadyKnown = fileTechPatterns.computeIfAbsent(fileId, k -> ConcurrentHashMap.newKeySet());
-
+            Set<String> keepTechIds = new HashSet<>();
             for (Map.Entry<String, String> entry : detectedTech.entrySet()) {
                 String techName = entry.getKey();
                 String patternDesc = entry.getValue();
+                String techId = "tech::" + techName.toLowerCase().replaceAll("[^a-z0-9]", "_");
+                keepTechIds.add(techId);
 
-                if (alreadyKnown.add(techName)) {
-                    String techId = "tech::" + techName.toLowerCase().replaceAll("[^a-z0-9]", "_");
-                    graphService.createNode("Technology", techId, Map.of(
-                            "name", techName,
-                            "pattern", patternDesc
-                    ));
-                    graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
-                    log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileId, techName, patternDesc);
-                }
+                graphService.createNode("Technology", techId, Map.of(
+                        "name", techName,
+                        "pattern", patternDesc
+                ));
+                graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
             }
+
+            // Remove obsolete technology relationships if removed from source file
+            graphService.deleteStaleTechnologies(fileId, keepTechIds);
+
         } catch (Exception e) {
             log.debug("Pattern extraction error on {}: {}", fileName, e.getMessage());
         }
@@ -568,9 +606,8 @@ public class WorkspaceWatcherService {
             vectorStoreService.deleteByFile("symbol_knowledge", fileId);
             vectorStoreService.deleteByFile("code_knowledge", fileId);
 
-            // 3. Clear indexing and pattern caches
+            // 3. Clear indexing cache
             indexedContentHashes.remove(fileId);
-            fileTechPatterns.remove(fileId);
 
             log.info("⚡ Instant Auto-Sync: Cascaded delete of file node '{}' and vectors from Qdrant", fileId);
         } catch (Exception e) {

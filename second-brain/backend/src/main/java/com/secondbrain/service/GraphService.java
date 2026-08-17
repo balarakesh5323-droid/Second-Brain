@@ -327,6 +327,61 @@ public class GraphService {
         }
     }
 
+    public List<String> getDeclaredChildIds(String fileId) {
+        try (var session = driver.session()) {
+            var result = session.run("MATCH (f:File {id: $fileId})-[:DECLARES]->(child) RETURN child.id AS id", Map.of("fileId", fileId));
+            List<String> childIds = new ArrayList<>();
+            while (result.hasNext()) {
+                childIds.add(result.next().get("id").asString());
+            }
+            return childIds;
+        } catch (Exception e) {
+            log.debug("Error fetching children for {}: {}", fileId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    public void deleteStaleChildren(String fileId, Set<String> keepChildIds) {
+        try (var session = driver.session()) {
+            session.run("""
+                MATCH (f:File {id: $fileId})-[:DECLARES]->(child)
+                WHERE NOT child.id IN $keepChildIds
+                DETACH DELETE child
+                """, Map.of("fileId", fileId, "keepChildIds", new ArrayList<>(keepChildIds)));
+            log.debug("Purged stale child nodes for file '{}'", fileId);
+        } catch (Exception e) {
+            log.error("Failed purging stale children for {}: {}", fileId, e.getMessage());
+        }
+    }
+
+    public void deleteStaleTechnologies(String fileId, Set<String> keepTechIds) {
+        try (var session = driver.session()) {
+            session.run("""
+                MATCH (f:File {id: $fileId})-[r:USES_TECHNOLOGY]->(t:Technology)
+                WHERE NOT t.id IN $keepTechIds
+                DELETE r
+                """, Map.of("fileId", fileId, "keepTechIds", new ArrayList<>(keepTechIds)));
+            log.debug("Reconciled technology relationships for file '{}'", fileId);
+        } catch (Exception e) {
+            log.error("Failed reconciling technologies for {}: {}", fileId, e.getMessage());
+        }
+    }
+
+    public Map<String, String> findAllFileHashes(String prefix) {
+        try (var session = driver.session()) {
+            var result = session.run("MATCH (f:File) WHERE f.id STARTS WITH $prefix AND f.contentHash IS NOT NULL RETURN f.id AS id, f.contentHash AS hash", Map.of("prefix", prefix));
+            Map<String, String> hashes = new HashMap<>();
+            while (result.hasNext()) {
+                var record = result.next();
+                hashes.put(record.get("id").asString(), record.get("hash").asString());
+            }
+            return hashes;
+        } catch (Exception e) {
+            log.error("Failed fetching file hashes for prefix {}: {}", prefix, e.getMessage());
+            return Map.of();
+        }
+    }
+
     public void wipeAll() {
         try (var session = driver.session()) {
             session.run("MATCH (n) DETACH DELETE n");

@@ -146,4 +146,59 @@ public class GitService {
             log.warn("Git pull failed for {}: {}", repoPath, e.getMessage());
         }
     }
+
+    public Map<String, Object> getWorkingTreeStatus(String repoPath) {
+        Map<String, Object> statusMap = new HashMap<>();
+        statusMap.put("clean", true);
+        statusMap.put("state", "CLEAN");
+        statusMap.put("modifiedCount", 0);
+        statusMap.put("untrackedCount", 0);
+        statusMap.put("addedCount", 0);
+        statusMap.put("removedCount", 0);
+        statusMap.put("missingCount", 0);
+
+        if (repoPath == null || repoPath.isBlank()) {
+            return statusMap;
+        }
+
+        File dir = new File(repoPath);
+        if (!dir.exists()) {
+            return statusMap;
+        }
+
+        try {
+            Repository repository = new FileRepositoryBuilder()
+                    .findGitDir(dir)
+                    .build();
+
+            if (repository == null || repository.getDirectory() == null) {
+                return statusMap;
+            }
+
+            try (repository; Git git = new Git(repository)) {
+                org.eclipse.jgit.api.Status status = git.status().call();
+                if (status != null) {
+                    int modified = status.getModified().size();
+                    int untracked = status.getUntracked().size();
+                    int added = status.getAdded().size();
+                    int removed = status.getRemoved().size();
+                    int missing = status.getMissing().size();
+
+                    boolean isClean = status.isClean();
+                    String state = isClean ? "CLEAN" : "MODIFIED";
+
+                    statusMap.put("clean", isClean);
+                    statusMap.put("state", state);
+                    statusMap.put("modifiedCount", modified);
+                    statusMap.put("untrackedCount", untracked);
+                    statusMap.put("addedCount", added);
+                    statusMap.put("removedCount", removed);
+                    statusMap.put("missingCount", missing);
+                }
+            }
+        } catch (Throwable t) {
+            statusMap.put("error", t.getMessage());
+        }
+        return statusMap;
+    }
 }
