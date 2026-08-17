@@ -1,32 +1,33 @@
-package com.secondbrain.service;
+package com.secondbrain.parser;
 
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
-@Service
 @Slf4j
-public class JavaParserService {
+public class JavaParserService implements LanguageParser {
 
-    public static Map<String, Object> parseJavaFile(String filePath, String content) {
+    @Override
+    public Map<String, Object> parse(String filePath, String content) {
         try {
             CompilationUnit cu = StaticJavaParser.parse(content);
 
             Map<String, Object> result = new HashMap<>();
             result.put("file", filePath);
+            result.put("language", "Java");
 
             cu.getPackageDeclaration().ifPresent(pkg ->
                 result.put("package", pkg.getNameAsString()));
 
-            List<String> imports = cu.getImports().stream()
-                .map(imp -> imp.getNameAsString())
+            List<Map<String, String>> imports = cu.getImports().stream()
+                .map(imp -> Map.of("module", imp.getNameAsString()))
                 .toList();
             result.put("imports", imports);
 
@@ -34,7 +35,7 @@ public class JavaParserService {
             cu.findAll(ClassOrInterfaceDeclaration.class).forEach(clazz -> {
                 Map<String, Object> classInfo = new HashMap<>();
                 classInfo.put("name", clazz.getNameAsString());
-                classInfo.put("isInterface", clazz.isInterface());
+                classInfo.put("type", clazz.isInterface() ? "interface" : "class");
                 classInfo.put("isAbstract", clazz.isAbstract());
 
                 List<String> extendsList = clazz.getExtendedTypes().stream()
@@ -76,6 +77,9 @@ public class JavaParserService {
             });
             result.put("classes", classes);
 
+            List<Map<String, Object>> functions = new ArrayList<>();
+            result.put("functions", functions);
+
             return result;
         } catch (Exception e) {
             log.debug("Failed to parse Java file {}: {}", filePath, e.getMessage());
@@ -83,7 +87,8 @@ public class JavaParserService {
         }
     }
 
-    public static List<Map<String, String>> extractDependencies(String content) {
+    @Override
+    public List<Map<String, String>> extractDependencies(String content) {
         List<Map<String, String>> deps = new ArrayList<>();
         try {
             CompilationUnit cu = StaticJavaParser.parse(content);
@@ -100,5 +105,21 @@ public class JavaParserService {
             log.debug("Failed to extract dependencies: {}", e.getMessage());
         }
         return deps;
+    }
+
+    @Override
+    public Set<String> supportedExtensions() {
+        return Set.of(".java");
+    }
+
+    @Override
+    public String languageName() { return "Java"; }
+
+    public static Map<String, Object> parseJavaFile(String filePath, String content) {
+        return new JavaParserService().parse(filePath, content);
+    }
+
+    public static List<Map<String, String>> extractJavaDependencies(String content) {
+        return new JavaParserService().extractDependencies(content);
     }
 }

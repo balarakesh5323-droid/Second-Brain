@@ -29,9 +29,8 @@ import static io.qdrant.client.grpc.Collections.VectorParams;
 public class VectorStoreService {
 
     private final QdrantConfig qdrantConfig;
+    private final EmbeddingService embeddingService;
     private QdrantClient qdrantClient;
-
-    private static final int EMBEDDING_DIMENSION = 1536;
 
     private static final List<String> COLLECTIONS = List.of(
         "global_knowledge",
@@ -61,16 +60,17 @@ public class VectorStoreService {
     }
 
     public void ensureCollectionsExist() {
+        int dimension = embeddingService.getEmbeddingDimensions();
         for (String collectionName : COLLECTIONS) {
             try {
                 qdrantClient.createCollectionAsync(
                     collectionName,
                     VectorParams.newBuilder()
                         .setDistance(Distance.Cosine)
-                        .setSize(EMBEDDING_DIMENSION)
+                        .setSize(dimension)
                         .build()
                 ).get();
-                log.info("Created/verified collection: {}", collectionName);
+                log.info("Created/verified collection: {} (dim={})", collectionName, dimension);
             } catch (Exception e) {
                 log.debug("Collection {} already exists or error: {}", collectionName, e.getMessage());
             }

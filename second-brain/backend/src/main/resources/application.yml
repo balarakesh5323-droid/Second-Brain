@@ -40,6 +40,11 @@ minio:
   access-key: minioadmin
   secret-key: minioadmin
 
+ollama:
+  base-url: http://192.168.0.114:11434
+  embedding-model: all-minilm
+  embedding-dimensions: 384
+
 management:
   endpoints:
     web:
