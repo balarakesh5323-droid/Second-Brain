@@ -137,5 +137,21 @@ class ClaudeToCodexContinuityIntegrationTest {
         assertTrue(responseBody.contains("In-memory ConcurrentHashMap token storage"), "Codex should know the failed approach");
         assertTrue(responseBody.contains("PostgreSQL RefreshToken table with JPA optimistic locking"), "Codex should know the successful approach");
         assertTrue(responseBody.contains("Implement RefreshTokenController"), "Codex should know the next pending task");
+
+        // 4. Test master 1-shot workspace-state endpoint
+        var wsResult = mockMvc.perform(get("/api/v1/bridge/workspace-state")
+                        .param("project", project.getId().toString())
+                        .param("repo", repo.getId().toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.project.name").value("CoreBanking"))
+                .andExpect(jsonPath("$.workspace.totalFilesCount").exists())
+                .andExpect(jsonPath("$.briefing").isNotEmpty())
+                .andReturn();
+
+        String wsBody = wsResult.getResponse().getContentAsString();
+        System.out.println("\n=== MASTER WORKSPACE STATE BRIEFING ===");
+        System.out.println(wsBody);
+        assertTrue(wsBody.contains("CoreBanking"));
+        assertTrue(wsBody.contains("auth-service"));
     }
 }

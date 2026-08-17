@@ -270,23 +270,59 @@ public class AgentBridgeService {
             ));
         }
 
-        // 3. Scan workspace files if path exists
+        // 3. Deep Scan workspace files with accurate metadata
         String targetPath = (project != null && project.getPath() != null && !project.getPath().isBlank())
                 ? project.getPath()
                 : (repo != null && repo.getPath() != null ? repo.getPath() : null);
 
         List<String> workspaceFiles = new ArrayList<>();
+        int totalFilesCount = 0;
+        int maxDepth = 5;
+        int sampleLimit = 40;
+
         if (targetPath != null) {
             java.nio.file.Path p = java.nio.file.Paths.get(targetPath);
             if (java.nio.file.Files.exists(p)) {
-                try (var stream = java.nio.file.Files.walk(p, 2)) {
-                    stream.filter(java.nio.file.Files::isRegularFile)
-                            .filter(f -> !f.toString().contains("/.git/") && !f.toString().contains("/node_modules/"))
-                            .limit(15)
+                try (var stream = java.nio.file.Files.walk(p, maxDepth)) {
+                    List<java.nio.file.Path> allFiles = stream
+                            .filter(java.nio.file.Files::isRegularFile)
+                            .filter(f -> {
+                                String pathStr = f.toString();
+                                return !pathStr.contains("/.git/") &&
+                                       !pathStr.contains("/node_modules/") &&
+                                       !pathStr.contains("/target/") &&
+                                       !pathStr.contains("/build/") &&
+                                       !pathStr.contains("/.gradle/") &&
+                                       !pathStr.contains("/__pycache__/");
+                            })
+                            .toList();
+
+                    totalFilesCount = allFiles.size();
+
+                    // Prioritize source and configuration files
+                    allFiles.stream()
+                            .sorted((a, b) -> {
+                                String sa = a.toString().toLowerCase();
+                                String sb = b.toString().toLowerCase();
+                                boolean aImp = sa.endsWith(".java") || sa.endsWith(".py") || sa.endsWith(".ts") || sa.endsWith(".js") || sa.endsWith(".html") || sa.endsWith("pom.xml") || sa.endsWith("dockerfile");
+                                boolean bImp = sb.endsWith(".java") || sb.endsWith(".py") || sb.endsWith(".ts") || sb.endsWith(".js") || sb.endsWith(".html") || sb.endsWith("pom.xml") || sb.endsWith("dockerfile");
+                                if (aImp && !bImp) return -1;
+                                if (!aImp && bImp) return 1;
+                                return sa.compareTo(sb);
+                            })
+                            .limit(sampleLimit)
                             .forEach(f -> workspaceFiles.add(p.relativize(f).toString()));
                 } catch (Exception ignored) {}
             }
         }
+
+        Map<String, Object> workspaceMeta = new LinkedHashMap<>();
+        workspaceMeta.put("totalFilesCount", totalFilesCount);
+        workspaceMeta.put("sampled", totalFilesCount > sampleLimit);
+        workspaceMeta.put("sampleLimit", sampleLimit);
+        workspaceMeta.put("maxDepth", maxDepth);
+        workspaceMeta.put("files", workspaceFiles);
+        state.put("workspace", workspaceMeta);
         state.put("workspaceFiles", workspaceFiles);
 
         // 4. Latest handoff
@@ -313,10 +349,12 @@ public class AgentBridgeService {
         List<AgentAttempt> attempts = (project != null)
                 ? attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId())
                 : (repo != null ? attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId()) : attemptRepository.findAllOrderByCreatedAtDesc());
-        state.put("recentAttempts", attempts.stream().limit(5).map(a -> Map.of(
+        state.put("recentAttempts", attempts.stream().limit(6).map(a -> Map.of(
                 "agent", a.getAgentName() != null ? a.getAgentName() : "agent",
+                "task", a.getTaskDescription() != null ? a.getTaskDescription() : "",
                 "approach", a.getApproach() != null ? a.getApproach() : "",
                 "status", a.getStatus() != null ? a.getStatus() : "",
+                "error", a.getErrorMessage() != null ? a.getErrorMessage() : "none",
                 "lessonLearned", a.getLessonLearned() != null ? a.getLessonLearned() : "N/A"
         )).toList());
 
@@ -324,7 +362,7 @@ public class AgentBridgeService {
         List<Decision> decisions = (project != null)
                 ? decisionRepository.findByProjectId(project.getId())
                 : decisionRepository.findAll();
-        state.put("activeDecisions", decisions.stream().limit(5).map(d -> Map.of(
+        state.put("activeDecisions", decisions.stream().limit(6).map(d -> Map.of(
                 "title", d.getTitle(),
                 "rationale", d.getRationale() != null ? d.getRationale() : ""
         )).toList());
@@ -333,7 +371,7 @@ public class AgentBridgeService {
         List<Task> openTasks = (project != null)
                 ? taskRepository.findByProjectIdAndStatus(project.getId(), com.secondbrain.common.enums.TaskStatus.OPEN)
                 : taskRepository.findByStatus(com.secondbrain.common.enums.TaskStatus.OPEN);
-        state.put("openTasks", openTasks.stream().limit(5).map(Task::getTitle).toList());
+        state.put("openTasks", openTasks.stream().limit(6).map(Task::getTitle).toList());
 
         // 8. One-shot textual briefing summary
         StringBuilder sb = new StringBuilder();
@@ -344,29 +382,32 @@ public class AgentBridgeService {
         if (repo != null) {
             sb.append(String.format("📦 Repository: %s (%s)\n", repo.getName(), repo.getPrimaryLanguage()));
         }
+        sb.append(String.format("📂 Workspace: %d files tracked (Showing %d sampled)\n", totalFilesCount, workspaceFiles.size()));
+
         if (latestHandoff.isPresent()) {
             var h = latestHandoff.get();
             sb.append(String.format("\n📋 Latest Handoff Task: %s\n", h.getTask()));
             if (h.getCompletedItems() != null) sb.append(String.format("   • Completed: %s\n", h.getCompletedItems()));
             if (h.getInProgressItems() != null) sb.append(String.format("   • In Progress: %s\n", h.getInProgressItems()));
+            if (h.getBlockedItems() != null) sb.append(String.format("   • Blocked: %s\n", h.getBlockedItems()));
             if (h.getNextSteps() != null) sb.append(String.format("   • Next Steps: %s\n", h.getNextSteps()));
         }
         if (!attempts.isEmpty()) {
-            sb.append("\n🔬 Recent Engineering Trials:\n");
-            for (AgentAttempt a : attempts.stream().limit(3).toList()) {
-                sb.append(String.format("   • [%s] %s -> %s (Lesson: %s)\n",
+            sb.append("\n🔬 Recent Engineering Trials (Failures & Successes):\n");
+            for (AgentAttempt a : attempts.stream().limit(4).toList()) {
+                sb.append(String.format("   • [%s] %s: %s (Lesson: %s)\n",
                         a.getStatus(), a.getAgentName(), a.getApproach(), a.getLessonLearned() != null ? a.getLessonLearned() : "none"));
             }
         }
         if (!decisions.isEmpty()) {
             sb.append("\n⚖️ Active Architectural Decisions:\n");
-            for (Decision d : decisions.stream().limit(3).toList()) {
+            for (Decision d : decisions.stream().limit(4).toList()) {
                 sb.append(String.format("   • %s: %s\n", d.getTitle(), d.getRationale() != null ? d.getRationale() : ""));
             }
         }
         if (!openTasks.isEmpty()) {
-            sb.append("\n📌 Open Tasks:\n");
-            for (Task t : openTasks.stream().limit(5).toList()) {
+            sb.append("\n📌 Remaining Open Tasks:\n");
+            for (Task t : openTasks.stream().limit(6).toList()) {
                 sb.append(String.format("   [ ] %s\n", t.getTitle()));
             }
         }
