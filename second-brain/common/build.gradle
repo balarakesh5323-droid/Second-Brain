@@ -8,6 +8,8 @@ dependencies {
     api 'org.springframework.boot:spring-boot-starter-data-neo4j'
     api 'org.postgresql:postgresql'
     api 'io.qdrant:client:1.19.0'
+    api 'org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r'
+    api 'com.github.javaparser:javaparser-core:3.26.2'
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 }
