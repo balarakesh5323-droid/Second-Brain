@@ -14,6 +14,8 @@ import picocli.CommandLine.Parameters;
     mixinStandardHelpOptions = true,
     version = "1.0.0",
     subcommands = {
+        BrainCli.InitCommand.class,
+        BrainCli.WatchCommand.class,
         BrainCli.SearchCommand.class,
         BrainCli.AskCommand.class,
         BrainCli.RememberCommand.class,
@@ -37,6 +39,8 @@ public class BrainCli implements CommandLineRunner {
             System.out.println("Use 'brain <command> --help' for available commands.");
             System.out.println();
             System.out.println("Available commands:");
+            System.out.println("  init       Initialize brain for a repository (detect language, frameworks, DBs)");
+            System.out.println("  watch      Watch directory for changes and index them");
             System.out.println("  search     Search memories by keyword");
             System.out.println("  ask        Ask a natural language question");
             System.out.println("  remember   Store a new memory");
@@ -46,6 +50,101 @@ public class BrainCli implements CommandLineRunner {
             System.out.println("  context    Assemble full context for a query");
             System.out.println("  status     Check brain health status");
             System.out.println("  handoff    Get latest agent handoff");
+        }
+    }
+
+    @Command(name = "init", description = "Initialize brain for a repository (detect language, frameworks, databases, Docker, CI/CD)")
+    static class InitCommand implements Runnable {
+        @Parameters(index = "0", description = "Path to repository", defaultValue = ".")
+        private String repoPath;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                java.io.File dir = new java.io.File(repoPath).getCanonicalFile();
+                System.out.println("Initializing brain for: " + dir.getAbsolutePath());
+                System.out.println();
+
+                var client = java.net.http.HttpClient.newHttpClient();
+                var url = serverUrl + "/api/v1/repositories/bootstrap?path=" +
+                    java.net.URLEncoder.encode(dir.getAbsolutePath(), "UTF-8");
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url))
+                    .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() == 200) {
+                    System.out.println(formatJson(response.body()));
+                } else {
+                    System.err.println("Bootstrap failed (HTTP " + response.statusCode() + "): " + response.body());
+                }
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "watch", description = "Watch a directory for file changes and index them (with debouncing)")
+    static class WatchCommand implements Runnable {
+        @Parameters(index = "0", description = "Directory to watch", defaultValue = ".")
+        private String watchPath;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                java.io.File dir = new java.io.File(watchPath).getCanonicalFile();
+                if (!dir.isDirectory()) {
+                    System.err.println("Not a directory: " + dir.getAbsolutePath());
+                    return;
+                }
+
+                System.out.println("Watching: " + dir.getAbsolutePath());
+                System.out.println("Press Ctrl+C to stop.");
+                System.out.println();
+
+                java.nio.file.WatchService watchService = java.nio.file.FileSystems.getDefault().newWatchService();
+                java.nio.file.Path watchDir = dir.toPath();
+                watchDir.register(watchService,
+                    java.nio.file.StandardWatchEventKinds.ENTRY_CREATE,
+                    java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY,
+                    java.nio.file.StandardWatchEventKinds.ENTRY_DELETE);
+
+                long debounceMs = 2000;
+                long lastEvent = 0;
+                java.util.Set<String> pendingChanges = new java.util.LinkedHashSet<>();
+
+                while (true) {
+                    java.nio.file.WatchKey key = watchService.take();
+                    for (java.nio.file.WatchEvent<?> event : key.pollEvents()) {
+                        java.nio.file.Path changed = (java.nio.file.Path) event.context();
+                        String changeType = event.kind().name();
+                        String relativePath = watchDir.resolve(changed).toString();
+                        pendingChanges.add(changeType + " " + relativePath);
+                    }
+                    key.reset();
+
+                    long now = System.currentTimeMillis();
+                    if (!pendingChanges.isEmpty() && (now - lastEvent) >= debounceMs) {
+                        System.out.println("[" + java.time.LocalTime.now() + "] Changes detected:");
+                        for (String change : pendingChanges) {
+                            System.out.println("  " + change);
+                        }
+                        pendingChanges.clear();
+                        lastEvent = now;
+                    }
+                }
+            } catch (java.nio.file.ClosedWatchServiceException e) {
+                System.out.println("Watch stopped.");
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
         }
     }
 
