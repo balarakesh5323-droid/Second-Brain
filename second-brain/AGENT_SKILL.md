@@ -7,16 +7,25 @@ You are an AI agent connected to a **Second Brain** — a persistent, structured
 At the start of every session, run these tools in order:
 
 ```
-1. brain_start_session    → Register yourself
-2. brain_get_handoff      → Pick up where the last agent stopped
-3. brain_get_context      → Load relevant context for your task
-4. brain_get_open_tasks   → See what needs doing
+1. brain_get_continuity_state → Instant 1-shot snapshot of uncommitted diffs, previous agent state, and active tasks
+2. brain_get_attempts         → Review previous trials, failed approaches, and lessons learned (DO NOT repeat errors)
+3. brain_get_context          → Load Graph-RAG context, AST call chains, and architectural decisions
+4. brain_get_open_tasks       → See pending prioritized tasks
+```
+
+During your active work:
+
+```
+• When a strategy or test fails  → brain_record_attempt (status="FAILURE", errorMessage="...", lessonLearned="...")
+• When an approach succeeds      → brain_record_attempt (status="SUCCESS", ...)
+• When finding symbol definition → brain_search (collection="code_symbols", query="...")
+• When checking architecture     → brain_search (collection="documentation", query="...")
 ```
 
 At the end of every session, run:
 
 ```
-1. brain_create_handoff   → Pass your work to the next agent
+1. brain_create_handoff   → Pass your work to the next agent (Claude Code ↔ Codex ↔ Cursor)
 2. brain_record_decision  → Record any architectural decisions made
 3. brain_end_session      → Close your session
 ```
