@@ -68,6 +68,11 @@ public class AgentBridgeController {
         return ResponseEntity.ok(bridgeService.completeSession(sessionId, payload));
     }
 
+    @GetMapping("/session/{sessionId}/events")
+    public ResponseEntity<List<com.secondbrain.common.entity.AgentEvent>> getSessionEvents(@PathVariable UUID sessionId) {
+        return ResponseEntity.ok(bridgeService.getSessionEvents(sessionId));
+    }
+
     @GetMapping("/timeline")
     public ResponseEntity<List<Map<String, Object>>> getAgentTimeline(
             @RequestParam(value = "repo", required = false) String repo,

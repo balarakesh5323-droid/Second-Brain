@@ -696,6 +696,16 @@ public class AgentBridgeService {
         session = sessionRepository.save(session);
         UUID sessionId = session.getId();
 
+        // 1. Record immutable Event #1 (SESSION_STARTED) in PostgreSQL durable log
+        AgentEvent startEvt = AgentEvent.builder()
+                .session(session)
+                .sequenceNumber(1)
+                .eventType(com.secondbrain.common.enums.EventType.SESSION_STARTED)
+                .description("Session started by " + agentName + " on task: " + session.getTask())
+                .status("COMPLETED")
+                .build();
+        eventRepository.save(startEvt);
+
         String repoIdStr = repo != null ? repo.getId().toString() : null;
         Map<String, Object> sessionProps = new HashMap<>();
         sessionProps.put("status", com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name());
@@ -729,6 +739,52 @@ public class AgentBridgeService {
         AgentSession session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
 
+        // Reject appending events to already COMPLETED or FAILED sessions
+        if (!com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name().equalsIgnoreCase(session.getStatus())) {
+            throw new IllegalStateException("Cannot append event to session " + sessionId + " with status " + session.getStatus());
+        }
+
+        String rawType = payload.getEventType() != null ? payload.getEventType().trim().toUpperCase() : "";
+        com.secondbrain.common.enums.EventType eventEnum;
+        try {
+            eventEnum = com.secondbrain.common.enums.EventType.valueOf(rawType);
+        } catch (Exception e) {
+            if ("DECISION".equals(rawType)) eventEnum = com.secondbrain.common.enums.EventType.DECISION_MADE;
+            else if ("PROBLEM".equals(rawType)) eventEnum = com.secondbrain.common.enums.EventType.PROBLEM_DISCOVERED;
+            else if ("FAILED_ATTEMPT".equals(rawType)) eventEnum = com.secondbrain.common.enums.EventType.FAILED_ATTEMPT;
+            else if ("FILE_TOUCHED".equals(rawType)) eventEnum = com.secondbrain.common.enums.EventType.FILE_TOUCHED;
+            else if ("COMMIT".equals(rawType)) eventEnum = com.secondbrain.common.enums.EventType.GIT_COMMIT;
+            else throw new IllegalArgumentException("Unknown or unsupported eventType: " + rawType);
+        }
+
+        // Strict validation: enforce exact 1-to-1 payload matching
+        if (eventEnum == com.secondbrain.common.enums.EventType.DECISION_MADE || "DECISION".equals(rawType)) {
+            if (payload.getDecision() == null || payload.getProblem() != null || payload.getFailedAttempt() != null || payload.getCommit() != null || payload.getFilePath() != null) {
+                throw new IllegalArgumentException("DECISION event requires decision payload and no unrelated payload fields");
+            }
+        } else if (eventEnum == com.secondbrain.common.enums.EventType.PROBLEM_DISCOVERED || "PROBLEM".equals(rawType)) {
+            if (payload.getProblem() == null || payload.getDecision() != null || payload.getFailedAttempt() != null || payload.getCommit() != null || payload.getFilePath() != null) {
+                throw new IllegalArgumentException("PROBLEM event requires problem payload and no unrelated payload fields");
+            }
+        } else if (eventEnum == com.secondbrain.common.enums.EventType.FAILED_ATTEMPT || "FAILED_ATTEMPT".equals(rawType)) {
+            if (payload.getFailedAttempt() == null || payload.getDecision() != null || payload.getProblem() != null || payload.getCommit() != null || payload.getFilePath() != null) {
+                throw new IllegalArgumentException("FAILED_ATTEMPT event requires failedAttempt payload and no unrelated payload fields");
+            }
+        } else if (eventEnum == com.secondbrain.common.enums.EventType.FILE_TOUCHED || "FILE_TOUCHED".equals(rawType)) {
+            if (payload.getFilePath() == null || payload.getFilePath().isBlank() || payload.getDecision() != null || payload.getProblem() != null || payload.getFailedAttempt() != null || payload.getCommit() != null) {
+                throw new IllegalArgumentException("FILE_TOUCHED event requires filePath and no unrelated payload fields");
+            }
+        } else if (eventEnum == com.secondbrain.common.enums.EventType.GIT_COMMIT || "COMMIT".equals(rawType)) {
+            if (payload.getCommit() == null || payload.getDecision() != null || payload.getProblem() != null || payload.getFailedAttempt() != null || payload.getFilePath() != null) {
+                throw new IllegalArgumentException("COMMIT event requires commit payload and no unrelated payload fields");
+            }
+        }
+
+        // Calculate next monotonic sequence number for this session
+        int nextSeq = eventRepository.findTopBySessionIdOrderBySequenceNumberDesc(sessionId)
+                .map(e -> e.getSequenceNumber() != null ? e.getSequenceNumber() + 1 : 1)
+                .orElse(1);
+
         Agent agent = session.getAgent();
         RepositoryEntity repo = session.getRepository();
         Project project = session.getProject();
@@ -740,9 +796,12 @@ public class AgentBridgeService {
         List<Map<String, Object>> failedAttemptsGraph = new ArrayList<>();
         List<Map<String, Object>> commitsGraph = new ArrayList<>();
         List<String> touchedFiles = new ArrayList<>();
+        String eventDescription = rawType;
+        String eventDetails = null;
 
         if (payload.getProblem() != null) {
             problemsGraph.add(payload.getProblem());
+            eventDescription = "Problem discovered: " + payload.getProblem().getOrDefault("title", "Problem");
         }
 
         if (payload.getDecision() != null) {
@@ -760,6 +819,8 @@ public class AgentBridgeService {
             Map<String, Object> decGraph = new HashMap<>(d);
             decGraph.put("id", canonicalDecId);
             decisionsGraph.add(decGraph);
+            eventDescription = "Decision made: " + decision.getTitle();
+            eventDetails = decision.getRationale();
 
             try {
                 String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
@@ -798,6 +859,8 @@ public class AgentBridgeService {
             Map<String, Object> faGraph = new HashMap<>(fa);
             faGraph.put("id", canonicalFailId);
             failedAttemptsGraph.add(faGraph);
+            eventDescription = "Failed attempt: " + attempt.getApproach();
+            eventDetails = attempt.getErrorMessage();
 
             try {
                 String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
@@ -821,11 +884,25 @@ public class AgentBridgeService {
 
         if (payload.getCommit() != null) {
             commitsGraph.add(payload.getCommit());
+            eventDescription = "Commit produced: " + payload.getCommit().getOrDefault("hash", "commit");
         }
 
         if (payload.getFilePath() != null && !payload.getFilePath().isBlank()) {
             touchedFiles.add(payload.getFilePath());
+            eventDescription = "File touched: " + payload.getFilePath();
         }
+
+        // Save durable AgentEvent
+        AgentEvent agentEvt = AgentEvent.builder()
+                .session(session)
+                .sequenceNumber(nextSeq)
+                .eventType(eventEnum)
+                .description(eventDescription)
+                .details(eventDetails)
+                .filePath(payload.getFilePath())
+                .status("COMPLETED")
+                .build();
+        eventRepository.save(agentEvt);
 
         graphService.recordAgentSessionGraph(
                 agentName,
@@ -841,10 +918,11 @@ public class AgentBridgeService {
                 null
         );
 
-        Map<String, Object> res = new HashMap<>();
+        Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
         res.put("sessionId", sessionId);
-        res.put("eventType", payload.getEventType());
+        res.put("sequenceNumber", nextSeq);
+        res.put("eventType", eventEnum.name());
         return res;
     }
 
@@ -852,6 +930,19 @@ public class AgentBridgeService {
     public Map<String, Object> completeSession(UUID sessionId, CompleteSessionPayload payload) {
         AgentSession session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+
+        // Idempotency: If already completed or failed, return existing completion state cleanly
+        if (com.secondbrain.common.enums.AgentSessionStatus.COMPLETED.name().equalsIgnoreCase(session.getStatus()) ||
+            com.secondbrain.common.enums.AgentSessionStatus.FAILED.name().equalsIgnoreCase(session.getStatus())) {
+            log.info("Session {} already finished with status {}", sessionId, session.getStatus());
+            Map<String, Object> idempotentRes = new LinkedHashMap<>();
+            idempotentRes.put("status", "success");
+            idempotentRes.put("sessionId", sessionId);
+            idempotentRes.put("sessionStatus", session.getStatus());
+            idempotentRes.put("endedAt", session.getEndedAt());
+            idempotentRes.put("idempotent", true);
+            return idempotentRes;
+        }
 
         String rawStatus = payload.getStatus() != null ? payload.getStatus().trim().toUpperCase() : "COMPLETED";
         com.secondbrain.common.enums.AgentSessionStatus statusEnum;
@@ -875,6 +966,10 @@ public class AgentBridgeService {
         String agentName = agent != null ? agent.getName() : "unknown-agent";
         String repoIdStr = repo != null ? repo.getId().toString() : null;
 
+        int nextSeq = eventRepository.findTopBySessionIdOrderBySequenceNumberDesc(sessionId)
+                .map(e -> e.getSequenceNumber() != null ? e.getSequenceNumber() + 1 : 1)
+                .orElse(1);
+
         Map<String, Object> handoffGraphProps = null;
         if (payload.getHandoff() != null && !payload.getHandoff().isEmpty()) {
             Map<String, Object> h = payload.getHandoff();
@@ -894,7 +989,26 @@ public class AgentBridgeService {
 
             handoffGraphProps = new HashMap<>(h);
             handoffGraphProps.put("id", "handoff::" + handoff.getId().toString());
+
+            AgentEvent handoffEvt = AgentEvent.builder()
+                    .session(session)
+                    .sequenceNumber(nextSeq++)
+                    .eventType(com.secondbrain.common.enums.EventType.HANDOFF_CREATED)
+                    .description("Handoff created: " + handoff.getTask())
+                    .details(handoff.getNextSteps())
+                    .status("COMPLETED")
+                    .build();
+            eventRepository.save(handoffEvt);
         }
+
+        AgentEvent endEvt = AgentEvent.builder()
+                .session(session)
+                .sequenceNumber(nextSeq)
+                .eventType(com.secondbrain.common.enums.EventType.SESSION_ENDED)
+                .description("Session concluded with status: " + statusEnum.name())
+                .status("COMPLETED")
+                .build();
+        eventRepository.save(endEvt);
 
         Map<String, Object> sessionProps = new HashMap<>();
         sessionProps.put("status", statusEnum.name());
@@ -915,12 +1029,16 @@ public class AgentBridgeService {
                 handoffGraphProps
         );
 
-        Map<String, Object> res = new HashMap<>();
+        Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
         res.put("sessionId", sessionId);
         res.put("sessionStatus", statusEnum.name());
         res.put("endedAt", endedAt);
         return res;
+    }
+
+    public List<AgentEvent> getSessionEvents(UUID sessionId) {
+        return eventRepository.findBySessionIdOrderBySequenceNumberAsc(sessionId);
     }
 
     @Transactional

@@ -28,6 +28,9 @@ public class AgentEvent extends BaseEntity {
     @JdbcTypeCode(SqlTypes.VARCHAR)
     private EventType eventType;
 
+    @Column(name = "sequence_number")
+    private Integer sequenceNumber;
+
     private String description;
 
     private String filePath;

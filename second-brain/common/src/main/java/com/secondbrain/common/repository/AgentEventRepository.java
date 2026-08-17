@@ -13,6 +13,10 @@ public interface AgentEventRepository extends JpaRepository<AgentEvent, UUID> {
 
     List<AgentEvent> findBySessionId(UUID sessionId);
 
+    List<AgentEvent> findBySessionIdOrderBySequenceNumberAsc(UUID sessionId);
+
+    java.util.Optional<AgentEvent> findTopBySessionIdOrderBySequenceNumberDesc(UUID sessionId);
+
     List<AgentEvent> findByEventType(EventType eventType);
 
     List<AgentEvent> findTop20ByOrderByCreatedAtDesc();

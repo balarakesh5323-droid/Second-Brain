@@ -357,5 +357,46 @@ public class AgentActivityMemoryIntegrationTest {
         assertThat(compRes.get("status")).isEqualTo("success");
         assertThat(compRes.get("sessionStatus")).isEqualTo("COMPLETED");
         assertThat(compRes.get("endedAt")).isNotNull();
+
+        // Step E: Verify chronological immutable Event Log
+        var events = bridgeService.getSessionEvents(sessionId);
+        assertThat(events).hasSize(5);
+        assertThat(events.get(0).getSequenceNumber()).isEqualTo(1);
+        assertThat(events.get(0).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.SESSION_STARTED);
+
+        assertThat(events.get(1).getSequenceNumber()).isEqualTo(2);
+        assertThat(events.get(1).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.DECISION_MADE);
+
+        assertThat(events.get(2).getSequenceNumber()).isEqualTo(3);
+        assertThat(events.get(2).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.FAILED_ATTEMPT);
+
+        assertThat(events.get(3).getSequenceNumber()).isEqualTo(4);
+        assertThat(events.get(3).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.HANDOFF_CREATED);
+
+        assertThat(events.get(4).getSequenceNumber()).isEqualTo(5);
+        assertThat(events.get(4).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.SESSION_ENDED);
+
+        // Step F: Reject appending new events after session completion
+        AgentBridgeService.SessionEventPayload lateEvent = AgentBridgeService.SessionEventPayload.builder()
+                .eventType("DECISION")
+                .decision(Map.of("title", "Late Decision", "rationale", "Too late"))
+                .build();
+        assertThatThrownBy(() -> bridgeService.appendSessionEvent(sessionId, lateEvent))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Cannot append event to session");
+
+        // Step G: Verify Idempotent completeSession calls
+        Map<String, Object> idempotentRes = bridgeService.completeSession(sessionId, completePayload);
+        assertThat(idempotentRes.get("status")).isEqualTo("success");
+        assertThat(idempotentRes.get("idempotent")).isEqualTo(true);
+        assertThat(idempotentRes.get("sessionStatus")).isEqualTo("COMPLETED");
+
+        // Step H: Verify payload mismatch rejection
+        AgentBridgeService.SessionEventPayload mismatchedPayload = AgentBridgeService.SessionEventPayload.builder()
+                .eventType("DECISION")
+                .filePath("src/main/java/SomeService.java") // Unrelated field for a DECISION
+                .build();
+        assertThatThrownBy(() -> bridgeService.appendSessionEvent(UUID.randomUUID(), mismatchedPayload))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
