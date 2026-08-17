@@ -17,6 +17,7 @@ export const brainApi = {
   
   // Repositories
   getRepositories: () => api.get('/repositories'),
+  addRepository: (url, projectId) => api.post('/repository-intel/add-url', { url, projectId }),
   
   // Agents
   getAgents: () => api.get('/agents'),
