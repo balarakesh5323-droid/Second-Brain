@@ -895,6 +895,17 @@ public class BrainToolHandler {
         }
     }
 
+    public CallToolResult handleWorkspaceState(String project, String repository) {
+        try {
+            Map<String, Object> state = agentBridgeService.getWorkspaceState(project, repository);
+            String briefing = (String) state.getOrDefault("briefing", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(state));
+            return new CallToolResult(List.of(new TextContent(briefing)), false);
+        } catch (Exception e) {
+            log.error("Failed to retrieve workspace state", e);
+            return new CallToolResult(List.of(new TextContent("Error fetching workspace state: " + e.getMessage())), true);
+        }
+    }
+
     private Project findProjectByIdOrName(String idOrName) {
         try {
             UUID id = UUID.fromString(idOrName);

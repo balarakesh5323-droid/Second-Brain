@@ -43,4 +43,11 @@ public class AgentBridgeController {
             @RequestParam(value = "repo", required = false) String repo) {
         return ResponseEntity.ok(bridgeService.getContinuityState(repo));
     }
+
+    @GetMapping("/workspace-state")
+    public ResponseEntity<Map<String, Object>> getWorkspaceState(
+            @RequestParam(value = "project", required = false) String project,
+            @RequestParam(value = "repo", required = false) String repo) {
+        return ResponseEntity.ok(bridgeService.getWorkspaceState(project, repo));
+    }
 }

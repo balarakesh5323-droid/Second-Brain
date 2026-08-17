@@ -244,8 +244,54 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("File", fileId, "Class", clsId, "DECLARES", null);
             }
 
+            // 4. Architectural Event-to-Knowledge Discovery Pipeline
+            extractArchitecturalPatterns(content, fileName, fileId, projIdStr);
+
         } catch (Exception e) {
             log.debug("Auto-sync error on {}: {}", filePath, e.getMessage());
+        }
+    }
+
+    private void extractArchitecturalPatterns(String content, String fileName, String fileId, String projIdStr) {
+        try {
+            Map<String, String> detectedTech = new HashMap<>();
+
+            if (content.contains("@Cacheable") || content.contains("@CachePut") || content.contains("@CacheEvict") || content.contains("RedisTemplate")) {
+                detectedTech.put("Redis", "Caching Layer");
+            }
+            if (content.contains("@KafkaListener") || content.contains("KafkaTemplate")) {
+                detectedTech.put("Kafka", "Event-Driven Messaging");
+            }
+            if (content.contains("@RabbitListener") || content.contains("RabbitTemplate")) {
+                detectedTech.put("RabbitMQ", "Message Broker");
+            }
+            if (content.contains("@Transactional")) {
+                detectedTech.put("PostgreSQL", "ACID Transactional Persistence");
+            }
+            if (content.contains("@RestController") || content.contains("@GetMapping") || content.contains("@PostMapping")) {
+                detectedTech.put("Spring Web", "REST API Endpoint Gateway");
+            }
+            if (content.contains("useState") || content.contains("useEffect") || content.contains("import React")) {
+                detectedTech.put("React.js", "Frontend Component Architecture");
+            }
+            if (content.contains("getContext('2d')") || content.contains("requestAnimationFrame")) {
+                detectedTech.put("HTML5 Canvas", "2D Interactive Graphics Engine");
+            }
+
+            for (Map.Entry<String, String> entry : detectedTech.entrySet()) {
+                String techName = entry.getKey();
+                String patternDesc = entry.getValue();
+                String techId = "tech::" + techName.toLowerCase().replaceAll("[^a-z0-9]", "_");
+
+                graphService.createNode("Technology", techId, Map.of(
+                        "name", techName,
+                        "pattern", patternDesc
+                ));
+                graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
+                log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileName, techName, patternDesc);
+            }
+        } catch (Exception e) {
+            log.debug("Pattern extraction error on {}: {}", fileName, e.getMessage());
         }
     }
 

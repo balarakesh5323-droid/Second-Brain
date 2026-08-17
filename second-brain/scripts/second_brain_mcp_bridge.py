@@ -203,6 +203,17 @@ TOOLS = [
         }
     },
     {
+        "name": "brain_workspace_state",
+        "description": "1-Shot Master Context: Get active project, workspace files, recent trials, handoffs, decisions, and open tasks in a single call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Optional project name or UUID"},
+                "repository": {"type": "string", "description": "Optional repository name, ID or local path"}
+            }
+        }
+    },
+    {
         "name": "brain_doctor",
         "description": "Check Second Brain system health, vector database, graph store, and background worker status.",
         "inputSchema": {
@@ -373,6 +384,16 @@ def handle_tool_call(name, args):
         }
         res = make_http_request("/api/v1/intel/ingest-diagram", method="POST", data=payload)
         return json.dumps(res, indent=2)
+
+    elif name == "brain_workspace_state":
+        proj = args.get("project", "")
+        repo = args.get("repository", "")
+        query = []
+        if proj: query.append(f"project={urllib.parse.quote(proj)}")
+        if repo: query.append(f"repo={urllib.parse.quote(repo)}")
+        qs = "?" + "&".join(query) if query else ""
+        res = make_http_request(f"/api/v1/bridge/workspace-state{qs}")
+        return res.get("briefing", json.dumps(res, indent=2)) if isinstance(res, dict) else json.dumps(res, indent=2)
 
     elif name == "brain_doctor":
         health = make_http_request("/actuator/health")

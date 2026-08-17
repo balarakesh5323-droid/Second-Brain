@@ -447,6 +447,18 @@ public class SecondBrainMcpServer {
                     String format = (String) args.get("format");
                     String projectId = (String) args.get("project_id");
                     return toolHandler.handleIngestDiagram(diagram, format, projectId);
+                }),
+
+            buildTool("brain_workspace_state",
+                "1-Shot Master Context: Get active project, workspace files, recent trials, handoffs, decisions, and open tasks in a single call.",
+                "object", Map.of(
+                    "project", Map.of("type", "string", "description", "Optional project name or UUID"),
+                    "repository", Map.of("type", "string", "description", "Optional repository name, ID or local path")
+                ), List.of(),
+                (exchange, args) -> {
+                    String project = (String) args.get("project");
+                    String repo = (String) args.get("repository");
+                    return toolHandler.handleWorkspaceState(project, repo);
                 })
         );
     }

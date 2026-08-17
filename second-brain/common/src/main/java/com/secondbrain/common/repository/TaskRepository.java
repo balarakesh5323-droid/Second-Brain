@@ -20,4 +20,6 @@ public interface TaskRepository extends JpaRepository<Task, UUID> {
     List<Task> findByRepositoryIdAndStatus(UUID repositoryId, TaskStatus status);
 
     List<Task> findByStatusAndProjectId(TaskStatus status, UUID projectId);
+
+    List<Task> findByProjectIdAndStatus(UUID projectId, TaskStatus status);
 }

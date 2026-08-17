@@ -83,30 +83,59 @@ public class ProjectController {
         return ResponseEntity.ok(files);
     }
 
+    private static final java.util.Set<String> ALLOWED_EXTENSIONS = java.util.Set.of(
+            "html", "htm", "js", "mjs", "css", "json", "svg", "png", "jpg", "jpeg", "md", "txt"
+    );
+
     @GetMapping("/{id}/files/raw")
     public ResponseEntity<String> getRawFile(@PathVariable UUID id, @RequestParam(defaultValue = "car-game.html") String file) {
         Project project = projectService.getById(id);
-        if (project.getPath() != null && !project.getPath().isBlank()) {
-            java.nio.file.Path root = java.nio.file.Paths.get(project.getPath());
-            java.nio.file.Path target = root.resolve(file).normalize();
-            if (target.startsWith(root) && java.nio.file.Files.exists(target)) {
-                try {
-                    String content = java.nio.file.Files.readString(target);
-                    org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
-                    if (file.endsWith(".html") || file.endsWith(".htm")) {
-                        headers.setContentType(org.springframework.http.MediaType.TEXT_HTML);
-                    } else if (file.endsWith(".js")) {
-                        headers.setContentType(org.springframework.http.MediaType.valueOf("application/javascript"));
-                    } else if (file.endsWith(".css")) {
-                        headers.setContentType(org.springframework.http.MediaType.valueOf("text/css"));
-                    } else {
-                        headers.setContentType(org.springframework.http.MediaType.TEXT_PLAIN);
-                    }
-                    return new ResponseEntity<>(content, headers, HttpStatus.OK);
-                } catch (Exception ignored) {}
-            }
+        if (project.getPath() == null || project.getPath().isBlank()) {
+            return ResponseEntity.badRequest().build();
         }
-        return ResponseEntity.notFound().build();
+
+        int dot = file.lastIndexOf('.');
+        String ext = (dot > 0) ? file.substring(dot + 1).toLowerCase() : "";
+        if (!ALLOWED_EXTENSIONS.contains(ext)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Forbidden file extension.");
+        }
+
+        try {
+            java.nio.file.Path root = java.nio.file.Paths.get(project.getPath()).toRealPath();
+            java.nio.file.Path target = root.resolve(file).normalize();
+
+            if (!java.nio.file.Files.exists(target)) {
+                return ResponseEntity.notFound().build();
+            }
+
+            java.nio.file.Path targetCanonical = target.toRealPath();
+            if (!targetCanonical.startsWith(root)) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Access denied: Path traversal violation.");
+            }
+
+            if (java.nio.file.Files.size(targetCanonical) > 10_000_000) {
+                return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body("File exceeds maximum allowed size (10MB).");
+            }
+
+            String content = java.nio.file.Files.readString(targetCanonical);
+            org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+            if (ext.equals("html") || ext.equals("htm")) {
+                headers.setContentType(org.springframework.http.MediaType.TEXT_HTML);
+            } else if (ext.equals("js") || ext.equals("mjs")) {
+                headers.setContentType(org.springframework.http.MediaType.valueOf("application/javascript"));
+            } else if (ext.equals("css")) {
+                headers.setContentType(org.springframework.http.MediaType.valueOf("text/css"));
+            } else if (ext.equals("json")) {
+                headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+            } else if (ext.equals("svg")) {
+                headers.setContentType(org.springframework.http.MediaType.valueOf("image/svg+xml"));
+            } else {
+                headers.setContentType(org.springframework.http.MediaType.TEXT_PLAIN);
+            }
+            return new ResponseEntity<>(content, headers, HttpStatus.OK);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error reading file: " + e.getMessage());
+        }
     }
 
     @PutMapping("/{id}")

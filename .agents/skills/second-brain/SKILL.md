@@ -39,15 +39,15 @@ flowchart TD
 
 ### Phase 1: Onboarding & Continuity Retrieval (Start of Session)
 
-Before modifying code or guessing architecture, retrieve the existing state:
+Before modifying code or guessing architecture, retrieve the complete workspace state in **1 single call**:
 
-1. **Get 1-Shot Continuity Snapshot**:
-   - **MCP Tool**: `brain_get_continuity_state(repository_id_or_path=".")`
-   - **REST API**: `GET /api/v1/bridge/continuity?repo=.`
-   - **Yields**: Current uncommitted diffs, active branch, latest handoff notes, open tasks, and recent activity.
-2. **Review Previous Engineering Attempts**:
-   - **MCP Tool**: `brain_get_attempts(repository_id="...")`
-   - **Why**: Learn what strategies failed previously and avoid repeating identical errors.
+1. **Get 1-Shot Master Workspace State**:
+   - **MCP Tool**: `brain_workspace_state(project="...", repository="...")`
+   - **REST API**: `GET /api/v1/bridge/workspace-state`
+   - **Yields**: Complete executive briefing including active project, workspace files, recent trials/failures, latest handoff, architectural decisions, and open tasks.
+2. **Review Specific Continuity / Attempts**:
+   - **MCP Tool**: `brain_get_continuity_state(repository_id_or_path=".")` or `brain_get_attempts(repository_id="...")`
+   - **Why**: Deep-dive into specific failure logs, error traces, and previous lessons learned.
 3. **Assemble Graph-RAG Context**:
    - **MCP Tool**: `brain_get_context(query="your task description", repository_id="...")`
    - **Why**: Simultaneously gathers relevant memories, Neo4j graph subgraphs, past decisions, and tasks.
@@ -133,6 +133,7 @@ When completing your turn or switching tasks:
 | **List All Projects** | `brain_list_projects()` | `GET /api/v1/projects` |
 | **Inspect Project Details** | `brain_get_project(project)` | `GET /api/v1/projects/{id}` |
 | **Switch / Work on Project** | `brain_use_project(project, agent_name, task)` | `POST /api/v1/sessions` |
+| **Master Workspace State (1-Shot)** | `brain_workspace_state(project, repository)` | `GET /api/v1/bridge/workspace-state` |
 | **Get Full Task Context** | `brain_get_context(query, repository_id)` | `POST /api/v1/context/assemble` |
 | **Get Continuity Snapshot** | `brain_get_continuity_state(repo_path)` | `GET /api/v1/bridge/continuity?repo=...` |
 | **Check Previous Attempts** | `brain_get_attempts(repository_id, limit)` | `GET /api/v1/bridge/attempts` |

@@ -235,6 +235,146 @@ public class AgentBridgeService {
         return state;
     }
 
+    /**
+     * Master 1-shot workspace state gathering: projects, workspace files, recent attempts,
+     * latest handoffs, decisions, open tasks, and a structured executive briefing.
+     */
+    public Map<String, Object> getWorkspaceState(String projectQuery, String repoQuery) {
+        Project project = resolveProject(projectQuery);
+        RepositoryEntity repo = resolveRepository(repoQuery, repoQuery);
+
+        if (project == null && repo != null && repo.getProject() != null) {
+            project = repo.getProject();
+        }
+
+        Map<String, Object> state = new LinkedHashMap<>();
+
+        // 1. Project info
+        if (project != null) {
+            state.put("project", Map.of(
+                    "id", project.getId().toString(),
+                    "name", project.getName(),
+                    "path", project.getPath() != null ? project.getPath() : "",
+                    "status", project.getStatus() != null ? project.getStatus() : "active",
+                    "description", project.getDescription() != null ? project.getDescription() : ""
+            ));
+        }
+
+        // 2. Repository info
+        if (repo != null) {
+            state.put("repository", Map.of(
+                    "id", repo.getId().toString(),
+                    "name", repo.getName(),
+                    "path", repo.getPath() != null ? repo.getPath() : "",
+                    "language", repo.getPrimaryLanguage() != null ? repo.getPrimaryLanguage() : "Unknown"
+            ));
+        }
+
+        // 3. Scan workspace files if path exists
+        String targetPath = (project != null && project.getPath() != null && !project.getPath().isBlank())
+                ? project.getPath()
+                : (repo != null && repo.getPath() != null ? repo.getPath() : null);
+
+        List<String> workspaceFiles = new ArrayList<>();
+        if (targetPath != null) {
+            java.nio.file.Path p = java.nio.file.Paths.get(targetPath);
+            if (java.nio.file.Files.exists(p)) {
+                try (var stream = java.nio.file.Files.walk(p, 2)) {
+                    stream.filter(java.nio.file.Files::isRegularFile)
+                            .filter(f -> !f.toString().contains("/.git/") && !f.toString().contains("/node_modules/"))
+                            .limit(15)
+                            .forEach(f -> workspaceFiles.add(p.relativize(f).toString()));
+                } catch (Exception ignored) {}
+            }
+        }
+        state.put("workspaceFiles", workspaceFiles);
+
+        // 4. Latest handoff
+        Optional<AgentHandoff> latestHandoff = Optional.empty();
+        if (repo != null) {
+            latestHandoff = handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repo.getId());
+        }
+        if (latestHandoff.isEmpty()) {
+            var allHandoffs = handoffRepository.findAll();
+            if (!allHandoffs.isEmpty()) {
+                latestHandoff = Optional.of(allHandoffs.get(allHandoffs.size() - 1));
+            }
+        }
+        latestHandoff.ifPresent(h -> state.put("latestHandoff", Map.of(
+                "task", h.getTask() != null ? h.getTask() : "",
+                "completedItems", h.getCompletedItems() != null ? h.getCompletedItems() : "",
+                "inProgressItems", h.getInProgressItems() != null ? h.getInProgressItems() : "",
+                "blockedItems", h.getBlockedItems() != null ? h.getBlockedItems() : "",
+                "nextSteps", h.getNextSteps() != null ? h.getNextSteps() : "",
+                "changedFiles", h.getChangedFiles() != null ? h.getChangedFiles() : ""
+        )));
+
+        // 5. Recent attempts
+        List<AgentAttempt> attempts = (project != null)
+                ? attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId())
+                : (repo != null ? attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId()) : attemptRepository.findAllOrderByCreatedAtDesc());
+        state.put("recentAttempts", attempts.stream().limit(5).map(a -> Map.of(
+                "agent", a.getAgentName() != null ? a.getAgentName() : "agent",
+                "approach", a.getApproach() != null ? a.getApproach() : "",
+                "status", a.getStatus() != null ? a.getStatus() : "",
+                "lessonLearned", a.getLessonLearned() != null ? a.getLessonLearned() : "N/A"
+        )).toList());
+
+        // 6. Active decisions
+        List<Decision> decisions = (project != null)
+                ? decisionRepository.findByProjectId(project.getId())
+                : decisionRepository.findAll();
+        state.put("activeDecisions", decisions.stream().limit(5).map(d -> Map.of(
+                "title", d.getTitle(),
+                "rationale", d.getRationale() != null ? d.getRationale() : ""
+        )).toList());
+
+        // 7. Open tasks
+        List<Task> openTasks = (project != null)
+                ? taskRepository.findByProjectIdAndStatus(project.getId(), com.secondbrain.common.enums.TaskStatus.OPEN)
+                : taskRepository.findByStatus(com.secondbrain.common.enums.TaskStatus.OPEN);
+        state.put("openTasks", openTasks.stream().limit(5).map(Task::getTitle).toList());
+
+        // 8. One-shot textual briefing summary
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 🧠 SECOND BRAIN MASTER WORKSPACE STATE ===\n\n");
+        if (project != null) {
+            sb.append(String.format("📁 Active Project: %s (Path: %s)\n", project.getName(), project.getPath()));
+        }
+        if (repo != null) {
+            sb.append(String.format("📦 Repository: %s (%s)\n", repo.getName(), repo.getPrimaryLanguage()));
+        }
+        if (latestHandoff.isPresent()) {
+            var h = latestHandoff.get();
+            sb.append(String.format("\n📋 Latest Handoff Task: %s\n", h.getTask()));
+            if (h.getCompletedItems() != null) sb.append(String.format("   • Completed: %s\n", h.getCompletedItems()));
+            if (h.getInProgressItems() != null) sb.append(String.format("   • In Progress: %s\n", h.getInProgressItems()));
+            if (h.getNextSteps() != null) sb.append(String.format("   • Next Steps: %s\n", h.getNextSteps()));
+        }
+        if (!attempts.isEmpty()) {
+            sb.append("\n🔬 Recent Engineering Trials:\n");
+            for (AgentAttempt a : attempts.stream().limit(3).toList()) {
+                sb.append(String.format("   • [%s] %s -> %s (Lesson: %s)\n",
+                        a.getStatus(), a.getAgentName(), a.getApproach(), a.getLessonLearned() != null ? a.getLessonLearned() : "none"));
+            }
+        }
+        if (!decisions.isEmpty()) {
+            sb.append("\n⚖️ Active Architectural Decisions:\n");
+            for (Decision d : decisions.stream().limit(3).toList()) {
+                sb.append(String.format("   • %s: %s\n", d.getTitle(), d.getRationale() != null ? d.getRationale() : ""));
+            }
+        }
+        if (!openTasks.isEmpty()) {
+            sb.append("\n📌 Open Tasks:\n");
+            for (Task t : openTasks.stream().limit(5).toList()) {
+                sb.append(String.format("   [ ] %s\n", t.getTitle()));
+            }
+        }
+        state.put("briefing", sb.toString());
+
+        return state;
+    }
+
     private boolean isAttemptAction(ActivityPayload payload) {
         String type = payload.getActionType() != null ? payload.getActionType().toUpperCase() : "";
         return type.contains("TEST") || type.contains("BUILD") || type.contains("ATTEMPT") ||
