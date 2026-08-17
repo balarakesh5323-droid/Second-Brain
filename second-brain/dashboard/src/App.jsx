@@ -10,6 +10,7 @@ import KnowledgeGraph from './pages/KnowledgeGraph';
 import Documentation from './pages/Documentation';
 import BrainChat from './pages/BrainChat';
 import ProjectDocuments from './pages/ProjectDocuments';
+import Projects from './pages/Projects';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
           <Route path="chat" element={<BrainChat />} />
+          <Route path="projects" element={<Projects />} />
           <Route path="memory" element={<MemoryExplorer />} />
           <Route path="documents" element={<ProjectDocuments />} />
           <Route path="agents" element={<AgentActivity />} />

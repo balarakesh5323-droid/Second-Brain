@@ -110,6 +110,7 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - repo_data:/data/repos
+      - /home:/home:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

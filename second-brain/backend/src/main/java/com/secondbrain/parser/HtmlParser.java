@@ -46,6 +46,11 @@ public class HtmlParser implements LanguageParser {
         Pattern.CASE_INSENSITIVE
     );
 
+    private static final Pattern SCRIPT_BLOCK = Pattern.compile(
+        "<script(?:\\s+[^>]*)?>([\\s\\S]*?)</script>",
+        Pattern.CASE_INSENSITIVE
+    );
+
     @Override
     public Map<String, Object> parse(String filePath, String content) {
         Map<String, Object> result = new HashMap<>();
@@ -106,12 +111,30 @@ public class HtmlParser implements LanguageParser {
             meta.add(Map.of("name", metaMatcher.group(1), "content", metaMatcher.group(2)));
         }
 
+        List<Map<String, Object>> functions = new ArrayList<>();
+        List<Map<String, Object>> classes = new ArrayList<>();
+        JavaScriptParser jsParser = new JavaScriptParser();
+
+        Matcher scriptBlockMatcher = SCRIPT_BLOCK.matcher(content);
+        while (scriptBlockMatcher.find()) {
+            String scriptCode = scriptBlockMatcher.group(1);
+            if (scriptCode != null && !scriptCode.isBlank()) {
+                Map<String, Object> jsParsed = jsParser.parse(filePath, scriptCode);
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> jsFuncs = (List<Map<String, Object>>) jsParsed.getOrDefault("functions", List.of());
+                functions.addAll(jsFuncs);
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> jsClasses = (List<Map<String, Object>>) jsParsed.getOrDefault("classes", List.of());
+                classes.addAll(jsClasses);
+            }
+        }
+
         result.put("elements", elements);
         result.put("meta", meta);
         result.put("scripts", scripts);
         result.put("stylesheets", stylesheets);
-        result.put("classes", new ArrayList<>());
-        result.put("functions", new ArrayList<>());
+        result.put("classes", classes);
+        result.put("functions", functions);
         result.put("imports", new ArrayList<>());
 
         return result;

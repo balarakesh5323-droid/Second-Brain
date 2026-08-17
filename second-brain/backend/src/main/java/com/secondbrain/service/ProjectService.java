@@ -17,6 +17,7 @@ public class ProjectService {
     private final ProjectRepository projectRepository;
     private final RepositoryIngestionService ingestionService;
     private final GitHubCloneService cloneService;
+    private final GraphSyncService graphSyncService;
 
     public List<Project> getAll() {
         return projectRepository.findAll();
@@ -34,7 +35,13 @@ public class ProjectService {
                 .description(description)
                 .path(path)
                 .build();
-        return projectRepository.save(project);
+        project = projectRepository.save(project);
+        try {
+            graphSyncService.syncProjectToGraph(project);
+        } catch (Exception e) {
+            // non-fatal
+        }
+        return project;
     }
 
     @Transactional
@@ -56,6 +63,9 @@ public class ProjectService {
                     });
 
             var ingestResult = ingestionService.ingestFromUrl(gitRepo, project.getId());
+            try {
+                graphSyncService.syncProjectToGraph(project);
+            } catch (Exception ignored) {}
             response.put("project", project);
             response.put("ingestion", ingestResult);
             response.put("status", "success");

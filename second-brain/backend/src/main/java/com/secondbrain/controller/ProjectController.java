@@ -16,6 +16,7 @@ import java.util.UUID;
 public class ProjectController {
 
     private final ProjectService projectService;
+    private final com.secondbrain.service.GraphSyncService graphSyncService;
 
     @PostMapping
     public ResponseEntity<Project> create(@RequestBody Project project) {
@@ -31,6 +32,18 @@ public class ProjectController {
         String gitRepo = payload.get("gitRepo") != null ? payload.get("gitRepo") : payload.get("git_repo");
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(projectService.createWithRepo(name, description, path, gitRepo));
+    }
+
+    @PostMapping("/{id}/sync")
+    public ResponseEntity<java.util.Map<String, Object>> syncProject(@PathVariable UUID id) {
+        Project project = projectService.getById(id);
+        graphSyncService.syncProjectToGraph(project);
+        return ResponseEntity.ok(java.util.Map.of(
+                "status", "synced",
+                "projectId", project.getId().toString(),
+                "name", project.getName(),
+                "path", project.getPath() != null ? project.getPath() : ""
+        ));
     }
 
     @GetMapping

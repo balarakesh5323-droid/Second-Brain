@@ -30,6 +30,7 @@ export const brainApi = {
   // Projects
   getProjects: () => safeArray(api.get('/projects')),
   createProject: (data) => api.post('/projects', data),
+  syncProject: (id) => api.post(`/projects/${id}/sync`).then(r => r.data || {}),
   
   // Repositories
   getRepositories: () => safeArray(api.get('/repositories')),

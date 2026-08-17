@@ -19,11 +19,13 @@ import {
   X,
   CheckCircle2,
   FileText,
+  FolderKanban,
 } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
   { path: '/chat', label: 'Brain Chat', icon: Sparkles },
+  { path: '/projects', label: 'Projects', icon: FolderKanban },
   { path: '/documents', label: 'Docs & Images', icon: FileText },
   { path: '/memory', label: 'Memory', icon: Database },
   { path: '/agents', label: 'Agents', icon: Users },
