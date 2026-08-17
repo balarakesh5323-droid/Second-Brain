@@ -44,6 +44,18 @@ public class AgentBridgeController {
         return ResponseEntity.ok(bridgeService.getContinuityState(repo));
     }
 
+    @PostMapping("/session")
+    public ResponseEntity<Map<String, Object>> recordFullSession(@RequestBody AgentBridgeService.FullSessionPayload payload) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(bridgeService.recordFullSession(payload));
+    }
+
+    @GetMapping("/timeline")
+    public ResponseEntity<List<Map<String, Object>>> getAgentTimeline(
+            @RequestParam(value = "repo", required = false) String repo,
+            @RequestParam(value = "limit", defaultValue = "20") int limit) {
+        return ResponseEntity.ok(bridgeService.getAgentTimeline(repo, limit));
+    }
+
     @GetMapping("/workspace-state")
     public ResponseEntity<Map<String, Object>> getWorkspaceState(
             @RequestParam(value = "project", required = false) String project,

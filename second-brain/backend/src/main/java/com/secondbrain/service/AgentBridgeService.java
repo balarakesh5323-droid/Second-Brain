@@ -604,4 +604,183 @@ public class AgentBridgeService {
         private String projectId;
         private Set<String> tags;
     }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class FullSessionPayload {
+        private String agentName;
+        private String agentType; // "CLAUDE_CODE", "CODEX", "CURSOR", "CLI"
+        private String repositoryIdOrPath;
+        private String projectId;
+        private String branch;
+        private String headCommit;
+        private String taskSummary;
+        private String status; // "IN_PROGRESS", "COMPLETED", "FAILED"
+        private List<String> touchedFiles;
+        private List<Map<String, Object>> problems;
+        private List<Map<String, Object>> decisions;
+        private List<Map<String, Object>> failedAttempts;
+        private List<Map<String, Object>> commits;
+        private Map<String, Object> handoff;
+    }
+
+    @Transactional
+    public Map<String, Object> recordFullSession(FullSessionPayload payload) {
+        log.info("Recording complete Agent Activity Session for agent '{}' on repo '{}'",
+                payload.getAgentName(), payload.getRepositoryIdOrPath());
+
+        // 1. Resolve or create Agent
+        String agentName = (payload.getAgentName() != null && !payload.getAgentName().isBlank())
+                ? payload.getAgentName() : "unknown-agent";
+        String agentType = payload.getAgentType() != null ? payload.getAgentType() :
+                (agentName.toLowerCase().contains("claude") ? "CLAUDE_CODE" :
+                 agentName.toLowerCase().contains("codex") ? "CODEX" :
+                 agentName.toLowerCase().contains("cursor") ? "CURSOR" : "CLI");
+
+        Agent agent = agentRepository.findByName(agentName).orElseGet(() -> {
+            Agent newAgent = Agent.builder()
+                    .name(agentName)
+                    .type(agentType)
+                    .build();
+            return agentRepository.save(newAgent);
+        });
+
+        // 2. Resolve Repository & Project
+        RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
+        Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
+
+        // 3. Create Persistent JPA AgentSession
+        AgentSession session = AgentSession.builder()
+                .agent(agent)
+                .repository(repo)
+                .project(project)
+                .task(payload.getTaskSummary() != null ? payload.getTaskSummary() : "Autonomous Agent Session")
+                .status(payload.getStatus() != null ? payload.getStatus() : "completed")
+                .summary(payload.getTaskSummary() != null ? payload.getTaskSummary() : "Autonomous Agent Session")
+                .startedAt(LocalDateTime.now())
+                .endedAt(LocalDateTime.now())
+                .build();
+        session = sessionRepository.save(session);
+
+        // 4. Record Handoff in JPA if provided
+        if (payload.getHandoff() != null && !payload.getHandoff().isEmpty()) {
+            Map<String, Object> h = payload.getHandoff();
+            AgentHandoff handoff = AgentHandoff.builder()
+                    .agent(agent)
+                    .session(session)
+                    .repository(repo)
+                    .project(project)
+                    .task((String) h.getOrDefault("task", payload.getTaskSummary()))
+                    .completedItems((String) h.getOrDefault("completedItems", ""))
+                    .inProgressItems((String) h.getOrDefault("inProgressItems", ""))
+                    .blockedItems((String) h.getOrDefault("blockedItems", ""))
+                    .nextSteps((String) h.getOrDefault("nextSteps", ""))
+                    .changedFiles(payload.getTouchedFiles() != null ? String.join(", ", payload.getTouchedFiles()) : "")
+                    .build();
+            handoffRepository.save(handoff);
+        }
+
+        // 5. Record Failed Attempts & Lessons Learned
+        if (payload.getFailedAttempts() != null) {
+            for (Map<String, Object> fa : payload.getFailedAttempts()) {
+                AgentAttempt attempt = AgentAttempt.builder()
+                        .agentName(agentName)
+                        .taskDescription((String) fa.getOrDefault("task", payload.getTaskSummary()))
+                        .approach((String) fa.getOrDefault("approach", "Trial"))
+                        .status("FAILED")
+                        .errorMessage((String) fa.get("errorMessage"))
+                        .lessonLearned((String) fa.get("lessonLearned"))
+                        .session(session)
+                        .repository(repo)
+                        .project(project)
+                        .filesChanged(payload.getTouchedFiles() != null ? payload.getTouchedFiles() : new ArrayList<>())
+                        .build();
+                attemptRepository.save(attempt);
+
+                // Vectorize failed lesson into Qdrant for semantic recall
+                try {
+                    String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
+                            agentName, repo != null ? repo.getName() : "repo",
+                            fa.get("approach"), fa.get("errorMessage"), fa.get("lessonLearned"));
+                    float[] vec = embeddingService.embed(doc);
+                    if (vec != null) {
+                        String pointId = UUID.randomUUID().toString();
+                        Map<String, String> p = new HashMap<>();
+                        p.put("agentName", agentName);
+                        p.put("type", "failed_attempt");
+                        p.put("doc", doc);
+                        if (repo != null) p.put("repositoryId", repo.getId().toString());
+                        vectorStoreService.upsert("agent_memory", pointId, vec, p, Map.of());
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // 6. Record Decisions into JPA & Vector Store
+        if (payload.getDecisions() != null) {
+            for (Map<String, Object> d : payload.getDecisions()) {
+                Decision decision = Decision.builder()
+                        .title((String) d.getOrDefault("title", "Architectural Decision"))
+                        .rationale((String) d.getOrDefault("rationale", ""))
+                        .project(project)
+                        .repository(repo)
+                        .status("approved")
+                        .build();
+                decisionRepository.save(decision);
+
+                // Vectorize decision into Qdrant decision_memory
+                try {
+                    String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
+                            decision.getTitle(), decision.getTitle(), decision.getRationale());
+                    float[] vec = embeddingService.embed(doc);
+                    if (vec != null) {
+                        String pointId = UUID.randomUUID().toString();
+                        Map<String, String> p = new HashMap<>();
+                        p.put("title", decision.getTitle());
+                        p.put("doc", doc);
+                        if (repo != null) p.put("repositoryId", repo.getId().toString());
+                        vectorStoreService.upsert("decision_knowledge", pointId, vec, p, Map.of());
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // 7. Commit Full Graph into Neo4j
+        String repoIdStr = repo != null ? repo.getId().toString() : "";
+        Map<String, Object> sessionProps = new HashMap<>();
+        sessionProps.put("summary", payload.getTaskSummary() != null ? payload.getTaskSummary() : "");
+        sessionProps.put("status", payload.getStatus() != null ? payload.getStatus() : "COMPLETED");
+        sessionProps.put("startedAt", session.getStartedAt().toString());
+        sessionProps.put("branch", payload.getBranch() != null ? payload.getBranch() : "main");
+        sessionProps.put("headCommit", payload.getHeadCommit() != null ? payload.getHeadCommit() : "uncommitted");
+
+        graphService.recordAgentSessionGraph(
+                agentName,
+                agentType,
+                session.getId().toString(),
+                sessionProps,
+                repoIdStr,
+                payload.getTouchedFiles(),
+                payload.getProblems(),
+                payload.getDecisions(),
+                payload.getFailedAttempts(),
+                payload.getCommits(),
+                payload.getHandoff()
+        );
+
+        Map<String, Object> res = new HashMap<>();
+        res.put("status", "success");
+        res.put("sessionId", session.getId());
+        res.put("agent", agentName);
+        res.put("summary", payload.getTaskSummary());
+        return res;
+    }
+
+    public List<Map<String, Object>> getAgentTimeline(String repoIdOrPath, int limit) {
+        RepositoryEntity repo = resolveRepository(repoIdOrPath, repoIdOrPath);
+        String repoId = repo != null ? repo.getId().toString() : repoIdOrPath;
+        return graphService.getAgentTimeline(repoId, limit);
+    }
 }

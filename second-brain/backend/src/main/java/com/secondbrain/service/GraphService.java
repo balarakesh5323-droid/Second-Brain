@@ -392,6 +392,206 @@ public class GraphService {
         }
     }
 
+    public void recordAgentSessionGraph(
+            String agentName,
+            String agentType,
+            String sessionId,
+            Map<String, Object> sessionProps,
+            String repoId,
+            List<String> touchedFileIds,
+            List<Map<String, Object>> problems,
+            List<Map<String, Object>> decisions,
+            List<Map<String, Object>> failedAttempts,
+            List<Map<String, Object>> commits,
+            Map<String, Object> handoff
+    ) {
+        try (var session = driver.session()) {
+            String agentId = "agent::" + agentName.toLowerCase().replaceAll("[^a-z0-9]", "_");
+
+            // 1. Agent & Session nodes
+            session.run("""
+                MERGE (a:Agent {id: $agentId})
+                ON CREATE SET a.name = $agentName, a.type = $agentType, a.createdAt = datetime()
+                ON MATCH SET a.type = $agentType, a.updatedAt = datetime()
+                
+                MERGE (s:AgentSession {id: $sessionId})
+                SET s += $sessionProps
+                
+                MERGE (a)-[:STARTED]->(s)
+                """, Map.of(
+                    "agentId", agentId,
+                    "agentName", agentName,
+                    "agentType", agentType != null ? agentType : "CLI",
+                    "sessionId", sessionId,
+                    "sessionProps", sessionProps != null ? sessionProps : Map.of()
+            ));
+
+            // 2. Repository Link
+            if (repoId != null && !repoId.isBlank()) {
+                session.run("""
+                    MATCH (s:AgentSession {id: $sessionId})
+                    MERGE (r:Repository {id: $repoId})
+                    MERGE (s)-[:WORKED_ON]->(r)
+                    """, Map.of("sessionId", sessionId, "repoId", repoId));
+            }
+
+            // 3. Touched Files
+            if (touchedFileIds != null) {
+                for (String fId : touchedFileIds) {
+                    session.run("""
+                        MATCH (s:AgentSession {id: $sessionId})
+                        MERGE (f:File {id: $fileId})
+                        MERGE (s)-[:TOUCHED]->(f)
+                        """, Map.of("sessionId", sessionId, "fileId", fId));
+                }
+            }
+
+            // 4. Problems Encountered
+            if (problems != null) {
+                for (Map<String, Object> prob : problems) {
+                    String probId = (String) prob.getOrDefault("id", "prob::" + UUID.randomUUID());
+                    session.run("""
+                        MATCH (s:AgentSession {id: $sessionId})
+                        MERGE (p:Problem {id: $probId})
+                        SET p += $probProps
+                        MERGE (s)-[:ENCOUNTERED]->(p)
+                        """, Map.of("sessionId", sessionId, "probId", probId, "probProps", prob));
+                }
+            }
+
+            // 5. Decisions Made
+            if (decisions != null) {
+                for (Map<String, Object> dec : decisions) {
+                    String decId = (String) dec.getOrDefault("id", "dec::" + UUID.randomUUID());
+                    String solvedProblemId = (String) dec.get("solvedProblemId");
+                    session.run("""
+                        MATCH (s:AgentSession {id: $sessionId})
+                        MERGE (d:Decision {id: $decId})
+                        SET d += $decProps
+                        MERGE (s)-[:MADE]->(d)
+                        """, Map.of("sessionId", sessionId, "decId", decId, "decProps", dec));
+
+                    if (solvedProblemId != null && !solvedProblemId.isBlank()) {
+                        session.run("""
+                            MATCH (d:Decision {id: $decId}), (p:Problem {id: $probId})
+                            MERGE (d)-[:SOLVED]->(p)
+                            """, Map.of("decId", decId, "probId", solvedProblemId));
+                    }
+                }
+            }
+
+            // 6. Failed Attempts
+            if (failedAttempts != null) {
+                for (Map<String, Object> fa : failedAttempts) {
+                    String faId = (String) fa.getOrDefault("id", "fail::" + UUID.randomUUID());
+                    String relatedProblemId = (String) fa.get("problemId");
+                    session.run("""
+                        MATCH (s:AgentSession {id: $sessionId})
+                        MERGE (f:FailedAttempt {id: $faId})
+                        SET f += $faProps
+                        MERGE (s)-[:TRIED_AND_FAILED]->(f)
+                        """, Map.of("sessionId", sessionId, "faId", faId, "faProps", fa));
+
+                    if (relatedProblemId != null && !relatedProblemId.isBlank()) {
+                        session.run("""
+                            MATCH (p:Problem {id: $probId}), (f:FailedAttempt {id: $faId})
+                            MERGE (p)-[:RESULTED_IN]->(f)
+                            """, Map.of("probId", relatedProblemId, "faId", faId));
+                    }
+                }
+            }
+
+            // 7. Commits Produced
+            if (commits != null) {
+                for (Map<String, Object> c : commits) {
+                    String commitSha = (String) c.getOrDefault("hash", (String) c.getOrDefault("id", "c::" + UUID.randomUUID()));
+                    session.run("""
+                        MATCH (s:AgentSession {id: $sessionId})
+                        MERGE (c:Commit {id: $commitSha})
+                        SET c += $commitProps
+                        MERGE (s)-[:PRODUCED]->(c)
+                        """, Map.of("sessionId", sessionId, "commitSha", commitSha, "commitProps", c));
+                }
+            }
+
+            // 8. Handoff Created
+            if (handoff != null && !handoff.isEmpty()) {
+                String handoffId = (String) handoff.getOrDefault("id", "handoff::" + UUID.randomUUID());
+                String targetAgent = (String) handoff.get("targetAgent");
+                session.run("""
+                    MATCH (s:AgentSession {id: $sessionId})
+                    MERGE (h:AgentHandoff {id: $handoffId})
+                    SET h += $handoffProps
+                    MERGE (s)-[:CREATED]->(h)
+                    """, Map.of("sessionId", sessionId, "handoffId", handoffId, "handoffProps", handoff));
+
+                if (targetAgent != null && !targetAgent.isBlank()) {
+                    String targetAgentId = "agent::" + targetAgent.toLowerCase().replaceAll("[^a-z0-9]", "_");
+                    session.run("""
+                        MATCH (h:AgentHandoff {id: $handoffId})
+                        MERGE (ta:Agent {id: $targetAgentId})
+                        MERGE (h)-[:TARGETS]->(ta)
+                        """, Map.of("handoffId", handoffId, "targetAgentId", targetAgentId));
+                }
+            }
+
+            log.info("🧠 Agent Activity Memory: Recorded graph for agent '{}' on session '{}'", agentName, sessionId);
+        } catch (Exception e) {
+            log.error("Failed recording agent activity graph for session {}: {}", sessionId, e.getMessage());
+        }
+    }
+
+    public List<Map<String, Object>> getAgentTimeline(String repoId, int limit) {
+        try (var session = driver.session()) {
+            String cypher = """
+                MATCH (a:Agent)-[:STARTED]->(s:AgentSession)
+                OPTIONAL MATCH (s)-[:WORKED_ON]->(r:Repository)
+                OPTIONAL MATCH (s)-[:MADE]->(d:Decision)
+                OPTIONAL MATCH (s)-[:ENCOUNTERED]->(p:Problem)
+                OPTIONAL MATCH (s)-[:TRIED_AND_FAILED]->(fa:FailedAttempt)
+                OPTIONAL MATCH (s)-[:PRODUCED]->(c:Commit)
+                OPTIONAL MATCH (s)-[:CREATED]->(h:AgentHandoff)
+                WHERE ($repoId IS NULL OR r.id = $repoId OR r.name = $repoId)
+                RETURN a.name AS agentName,
+                       a.type AS agentType,
+                       s.id AS sessionId,
+                       s.summary AS summary,
+                       s.startedAt AS startedAt,
+                       s.status AS status,
+                       collect(DISTINCT d.title) AS decisions,
+                       collect(DISTINCT p.title) AS problems,
+                       collect(DISTINCT fa.approach) AS failedAttempts,
+                       collect(DISTINCT c.id) AS commits,
+                       h.nextSteps AS nextSteps
+                ORDER BY s.startedAt DESC
+                LIMIT $limit
+                """;
+
+            var result = session.run(cypher, Map.of("repoId", repoId != null ? repoId : "", "limit", limit > 0 ? limit : 20));
+            List<Map<String, Object>> timeline = new ArrayList<>();
+            while (result.hasNext()) {
+                var record = result.next();
+                Map<String, Object> item = new HashMap<>();
+                item.put("agentName", record.get("agentName").asString("Unknown"));
+                item.put("agentType", record.get("agentType").asString("CLI"));
+                item.put("sessionId", record.get("sessionId").asString(""));
+                item.put("summary", record.get("summary").asString(""));
+                item.put("startedAt", record.get("startedAt").asString(""));
+                item.put("status", record.get("status").asString("COMPLETED"));
+                item.put("decisions", record.get("decisions").asList(v -> v.asString()));
+                item.put("problems", record.get("problems").asList(v -> v.asString()));
+                item.put("failedAttempts", record.get("failedAttempts").asList(v -> v.asString()));
+                item.put("commits", record.get("commits").asList(v -> v.asString()));
+                item.put("nextSteps", record.get("nextSteps").asString(""));
+                timeline.add(item);
+            }
+            return timeline;
+        } catch (Exception e) {
+            log.error("Failed fetching agent timeline for repo {}: {}", repoId, e.getMessage());
+            return List.of();
+        }
+    }
+
     public void wipeAll() {
         try (var session = driver.session()) {
             session.run("MATCH (n) DETACH DELETE n");
