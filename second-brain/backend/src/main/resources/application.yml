@@ -31,9 +31,9 @@ qdrant:
   grpc-port: 6334
 
 neo4j:
-  uri: bolt://localhost:7687
-  username: neo4j
-  password: password
+  uri: ${NEO4J_URI:bolt://localhost:7687}
+  username: ${NEO4J_USERNAME:neo4j}
+  password: ${NEO4J_PASSWORD:password}
 
 minio:
   endpoint: http://localhost:9000

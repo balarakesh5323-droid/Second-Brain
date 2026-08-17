@@ -132,8 +132,14 @@ public class RepositoryIngestionService {
 
             // Step 6: Create knowledge graph nodes
             result.put("step", "building_graph");
-            int graphNodes = buildKnowledgeGraph(clone, bootstrap, codeStructure);
-            result.put("graphNodesCreated", graphNodes);
+            try {
+                int graphNodes = buildKnowledgeGraph(clone, bootstrap, codeStructure);
+                result.put("graphNodesCreated", graphNodes);
+            } catch (Exception e) {
+                log.warn("Graph building failed (non-fatal): {}", e.getMessage());
+                result.put("graphNodesCreated", 0);
+                result.put("graphError", e.getMessage());
+            }
 
             // Step 7: Store repository entity in PostgreSQL
             result.put("step", "persisting");
@@ -197,39 +203,56 @@ public class RepositoryIngestionService {
         int nodeCount = 0;
         String repoNodeId = clone.owner() + "/" + clone.repoName();
 
-        // Repository node
-        graphService.createNode("Repository", repoNodeId, Map.of(
-            "name", clone.repoName(),
-            "owner", clone.owner(),
-            "url", clone.remoteUrl(),
-            "branch", clone.defaultBranch(),
-            "languages", String.join(", ", bootstrap.getLanguages()),
-            "frameworks", String.join(", ", bootstrap.getFrameworks()),
-            "databases", String.join(", ", bootstrap.getDatabases()),
-            "path", clone.localPath()
+        // Batch 1: Repository node
+        graphService.batchCreateNodes("Repository", List.of(
+            Map.of("id", repoNodeId, "props", Map.of(
+                "name", clone.repoName(),
+                "owner", clone.owner(),
+                "url", clone.remoteUrl(),
+                "branch", clone.defaultBranch(),
+                "languages", String.join(", ", bootstrap.getLanguages()),
+                "frameworks", String.join(", ", bootstrap.getFrameworks()),
+                "databases", String.join(", ", bootstrap.getDatabases()),
+                "path", clone.localPath()
+            ))
         ));
         nodeCount++;
 
-        // Technology nodes + relationships
+        // Batch 2: Technology nodes
         Set<String> allTechs = new LinkedHashSet<>();
         allTechs.addAll(bootstrap.getFrameworks());
         allTechs.addAll(bootstrap.getDatabases());
         allTechs.addAll(bootstrap.getPackageManagers());
 
+        List<Map<String, Object>> techNodes = new ArrayList<>();
+        List<Map<String, Object>> techRels = new ArrayList<>();
         for (String tech : allTechs) {
-            graphService.createNode("Technology", tech, Map.of("name", tech));
-            graphService.createRelationship("Repository", repoNodeId, "Technology", tech, "USES", Map.of());
-            nodeCount += 2;
+            techNodes.add(Map.of("id", tech, "props", Map.of("name", tech)));
+            techRels.add(Map.of("fromId", repoNodeId, "toId", tech, "props", Map.of()));
         }
+        graphService.batchCreateNodes("Technology", techNodes);
+        graphService.batchCreateRelationshipsTyped("USES", techRels);
+        nodeCount += techNodes.size() * 2;
 
-        // Language nodes
+        // Batch 3: Language nodes
+        List<Map<String, Object>> langNodes = new ArrayList<>();
+        List<Map<String, Object>> langRels = new ArrayList<>();
         for (String lang : bootstrap.getLanguages()) {
-            graphService.createNode("Language", lang, Map.of("name", lang));
-            graphService.createRelationship("Repository", repoNodeId, "Language", lang, "WRITTEN_IN", Map.of());
-            nodeCount += 2;
+            langNodes.add(Map.of("id", lang, "props", Map.of("name", lang)));
+            langRels.add(Map.of("fromId", repoNodeId, "toId", lang, "props", Map.of()));
         }
+        graphService.batchCreateNodes("Language", langNodes);
+        graphService.batchCreateRelationshipsTyped("WRITTEN_IN", langRels);
+        nodeCount += langNodes.size() * 2;
 
-        // Code structure nodes (classes, functions, imports)
+        // Batch 4: Code structure - files, classes, functions
+        List<Map<String, Object>> fileNodes = new ArrayList<>();
+        List<Map<String, Object>> fileRels = new ArrayList<>();
+        List<Map<String, Object>> classNodes = new ArrayList<>();
+        List<Map<String, Object>> classRels = new ArrayList<>();
+        List<Map<String, Object>> funcNodes = new ArrayList<>();
+        List<Map<String, Object>> funcRels = new ArrayList<>();
+
         for (Map<String, Object> file : codeStructure) {
             String filePath = (String) file.getOrDefault("file", "");
             String shortPath = filePath;
@@ -237,70 +260,55 @@ public class RepositoryIngestionService {
                 shortPath = filePath.substring(filePath.indexOf(clone.repoName()) + clone.repoName().length() + 1);
             }
 
-            // File node
             String fileId = repoNodeId + "::" + shortPath;
-            graphService.createNode("File", fileId, Map.of(
+            fileNodes.add(Map.of("id", fileId, "props", Map.of(
                 "path", shortPath,
                 "language", file.getOrDefault("language", "unknown")
-            ));
-            graphService.createRelationship("Repository", repoNodeId, "File", fileId, "CONTAINS", Map.of());
-            nodeCount += 2;
+            )));
+            fileRels.add(Map.of("fromId", repoNodeId, "toId", fileId, "props", Map.of()));
 
-            // Class/interface nodes
             List<Map<String, Object>> classes = (List<Map<String, Object>>) file.getOrDefault("classes", List.of());
             for (Map<String, Object> cls : classes) {
                 String className = (String) cls.getOrDefault("name", "unknown");
                 String classId = repoNodeId + "::" + className;
-                graphService.createNode("Class", classId, Map.of(
+                classNodes.add(Map.of("id", classId, "props", Map.of(
                     "name", className,
                     "type", cls.getOrDefault("type", "class"),
                     "file", shortPath
-                ));
-                graphService.createRelationship("File", fileId, "Class", classId, "DEFINES", Map.of());
-                nodeCount += 2;
+                )));
+                classRels.add(Map.of("fromId", fileId, "toId", classId, "props", Map.of()));
 
-                // Extends relationships
                 List<String> extendsList = (List<String>) cls.getOrDefault("extends", List.of());
                 for (String parent : extendsList) {
-                    String parentId = repoNodeId + "::" + parent.trim();
-                    graphService.createRelationship("Class", classId, "Class", parentId, "EXTENDS", Map.of());
-                    nodeCount++;
+                    classRels.add(Map.of("fromId", classId, "toId", repoNodeId + "::" + parent.trim(), "props", Map.of()));
                 }
-
-                // Implements relationships
                 List<String> implementsList = (List<String>) cls.getOrDefault("implements", List.of());
                 for (String iface : implementsList) {
-                    String ifaceId = repoNodeId + "::" + iface.trim();
-                    graphService.createRelationship("Class", classId, "Class", ifaceId, "IMPLEMENTS", Map.of());
-                    nodeCount++;
+                    classRels.add(Map.of("fromId", classId, "toId", repoNodeId + "::" + iface.trim(), "props", Map.of()));
                 }
             }
 
-            // Function/method nodes
             List<Map<String, Object>> functions = (List<Map<String, Object>>) file.getOrDefault("functions", List.of());
             for (Map<String, Object> func : functions) {
                 String funcName = (String) func.getOrDefault("name", "unknown");
                 String funcId = repoNodeId + "::" + shortPath + "::" + funcName;
-                graphService.createNode("Function", funcId, Map.of(
+                funcNodes.add(Map.of("id", funcId, "props", Map.of(
                     "name", funcName,
                     "file", shortPath,
                     "returnType", func.getOrDefault("returnType", "void"),
                     "parameters", String.valueOf(func.getOrDefault("parameters", ""))
-                ));
-                graphService.createRelationship("File", fileId, "Function", funcId, "DEFINES", Map.of());
-                nodeCount += 2;
-            }
-
-            // Import/dependency nodes
-            List<Map<String, Object>> imports = (List<Map<String, Object>>) file.getOrDefault("imports", List.of());
-            for (Map<String, Object> imp : imports) {
-                String moduleName = (String) imp.getOrDefault("module", "");
-                if (moduleName != null && !moduleName.isBlank()) {
-                    graphService.createRelationship("File", fileId, "Module", moduleName, "IMPORTS", Map.of());
-                    nodeCount++;
-                }
+                )));
+                funcRels.add(Map.of("fromId", fileId, "toId", funcId, "props", Map.of()));
             }
         }
+
+        graphService.batchCreateNodes("File", fileNodes);
+        graphService.batchCreateRelationshipsTyped("CONTAINS", fileRels);
+        graphService.batchCreateNodes("Class", classNodes);
+        graphService.batchCreateRelationshipsTyped("DEFINES", classRels);
+        graphService.batchCreateNodes("Function", funcNodes);
+        graphService.batchCreateRelationshipsTyped("DEFINES", funcRels);
+        nodeCount += (fileNodes.size() + classNodes.size() + funcNodes.size()) * 2;
 
         log.info("Created {} graph nodes for {}/{}", nodeCount, clone.owner(), clone.repoName());
         return nodeCount;

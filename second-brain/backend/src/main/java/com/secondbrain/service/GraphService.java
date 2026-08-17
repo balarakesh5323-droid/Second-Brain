@@ -50,6 +50,73 @@ public class GraphService {
         }
     }
 
+    public void batchCreateNodes(String label, List<Map<String, Object>> nodeList) {
+        if (nodeList.isEmpty()) return;
+        String cypher = String.format("UNWIND $nodes AS n MERGE (e:%s {id: n.id}) SET e += n.props", label);
+        int created = 0;
+        for (int i = 0; i < nodeList.size(); i += 50) {
+            List<Map<String, Object>> chunk = nodeList.subList(i, Math.min(i + 50, nodeList.size()));
+            try (var session = driver.session()) {
+                List<Map<String, Object>> params = chunk.stream()
+                    .map(m -> Map.of("id", m.get("id"), "props", m.getOrDefault("props", Map.of())))
+                    .toList();
+                session.run(cypher, Map.of("nodes", params));
+                created += chunk.size();
+            } catch (Exception e) {
+                log.warn("Batch create {} nodes failed at chunk {}: {}", label, i, e.getMessage());
+            }
+        }
+        log.debug("Batch created {}/{} {} nodes", created, nodeList.size(), label);
+    }
+
+    public void batchCreateRelationships(List<Map<String, Object>> relList) {
+        if (relList.isEmpty()) return;
+        String cypher = "UNWIND $rels AS r " +
+            "MATCH (a {id: r.fromId}), (b {id: r.toId}) " +
+            "MERGE (a)-[rel]->(b) SET rel += r.props";
+        int created = 0;
+        for (int i = 0; i < relList.size(); i += 50) {
+            List<Map<String, Object>> chunk = relList.subList(i, Math.min(i + 50, relList.size()));
+            try (var session = driver.session()) {
+                List<Map<String, Object>> params = chunk.stream()
+                    .map(m -> Map.of(
+                        "fromId", m.get("fromId"),
+                        "toId", m.get("toId"),
+                        "props", m.getOrDefault("props", Map.of())))
+                    .toList();
+                session.run(cypher, Map.of("rels", params));
+                created += chunk.size();
+            } catch (Exception e) {
+                log.warn("Batch create relationships failed at chunk {}: {}", i, e.getMessage());
+            }
+        }
+        log.debug("Batch created {}/{} relationships", created, relList.size());
+    }
+
+    public void batchCreateRelationshipsTyped(String relType, List<Map<String, Object>> relList) {
+        if (relList.isEmpty()) return;
+        String cypher = String.format(
+            "UNWIND $rels AS r MATCH (a {id: r.fromId}), (b {id: r.toId}) MERGE (a)-[rel:%s]->(b) SET rel += r.props",
+            relType);
+        int created = 0;
+        for (int i = 0; i < relList.size(); i += 50) {
+            List<Map<String, Object>> chunk = relList.subList(i, Math.min(i + 50, relList.size()));
+            try (var session = driver.session()) {
+                List<Map<String, Object>> params = chunk.stream()
+                    .map(m -> Map.of(
+                        "fromId", m.get("fromId"),
+                        "toId", m.get("toId"),
+                        "props", m.getOrDefault("props", Map.of())))
+                    .toList();
+                session.run(cypher, Map.of("rels", params));
+                created += chunk.size();
+            } catch (Exception e) {
+                log.warn("Batch create {} relationships failed at chunk {}: {}", relType, i, e.getMessage());
+            }
+        }
+        log.debug("Batch created {}/{} {} relationships", created, relList.size(), relType);
+    }
+
     public List<Map<String, Object>> getNodesByLabel(String label, int limit) {
         try (var session = driver.session()) {
             var result = session.run(String.format("MATCH (n:%s) RETURN n LIMIT $limit", label), Map.of("limit", limit));
