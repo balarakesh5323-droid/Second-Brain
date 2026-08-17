@@ -1,0 +1,91 @@
+package com.secondbrain.common.entity;
+
+import com.secondbrain.common.enums.MemoryScope;
+import com.secondbrain.common.enums.MemoryStatus;
+import com.secondbrain.common.enums.MemoryType;
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import java.time.LocalDateTime;
+import java.util.HashSet;
+import java.util.Set;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@EqualsAndHashCode(callSuper = true)
+@Entity
+@Table(name = "memories")
+public class Memory extends BaseEntity {
+
+    @Column(columnDefinition = "text", nullable = false)
+    private String content;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    private MemoryType type;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    private MemoryScope scope;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    private MemoryStatus status;
+
+    private Double confidence;
+
+    private Double importance;
+
+    @Column(columnDefinition = "integer default 1")
+    @Builder.Default
+    private Integer observationCount = 1;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "project_id")
+    private Project project;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "repository_id")
+    private RepositoryEntity repository;
+
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "memory_tags", joinColumns = @JoinColumn(name = "memory_id"))
+    @Column(name = "tag")
+    @Builder.Default
+    private Set<String> tags = new HashSet<>();
+
+    private String sourceType;
+
+    @Column(columnDefinition = "uuid")
+    private java.util.UUID sourceId;
+
+    private String sourceUrl;
+
+    private String sourceFile;
+
+    private Integer lineStart;
+
+    private Integer lineEnd;
+
+    private String sourceCommit;
+
+    private String sourceAgent;
+
+    @Column(columnDefinition = "uuid")
+    private java.util.UUID sourceSession;
+
+    private LocalDateTime firstSeenAt;
+
+    private LocalDateTime lastSeenAt;
+}
