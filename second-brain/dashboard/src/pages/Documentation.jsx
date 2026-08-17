@@ -140,7 +140,7 @@ export default function Documentation() {
       </div>
 
       {/* Content */}
-      <div className="space-y-10 min-w-0">
+      <div className="space-y-10 min-w-0 overflow-hidden">
 
         {/* ── Getting Started ── */}
         <Section id="getting-started" title="Getting Started">
