@@ -30,6 +30,8 @@ public class AgentBridgeService {
     private final RepositoryEntityRepository repositoryRepository;
     private final ProjectRepository projectRepository;
     private final MemoryRepository memoryRepository;
+    private final DecisionRepository decisionRepository;
+    private final TaskRepository taskRepository;
     private final VectorStoreService vectorStoreService;
     private final EmbeddingService embeddingService;
     private final GraphService graphService;
@@ -180,8 +182,8 @@ public class AgentBridgeService {
             ));
 
             // Latest handoff
-            handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repo.getId())
-                    .ifPresent(h -> state.put("latestHandoff", h));
+            var latestHandoff = handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repo.getId());
+            latestHandoff.ifPresent(h -> state.put("latestHandoff", h));
 
             // Recent attempts
             List<AgentAttempt> attempts = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId());
@@ -190,6 +192,44 @@ public class AgentBridgeService {
             // Recent uncommitted / activity events
             List<AgentEvent> events = eventRepository.findTop20ByOrderByCreatedAtDesc();
             state.put("recentEvents", events.stream().limit(10).toList());
+
+            // Open tasks
+            List<Task> openTasks = taskRepository.findByRepositoryIdAndStatus(repo.getId(), com.secondbrain.common.enums.TaskStatus.OPEN);
+            state.put("openTasks", openTasks);
+
+            // Recent decisions
+            List<Decision> decisions = decisionRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId());
+            state.put("recentDecisions", decisions.stream().limit(5).toList());
+
+            // Synthesize Natural Language Briefing for incoming agent
+            StringBuilder briefing = new StringBuilder();
+            briefing.append("=== AUTOMATIC CONTINUITY BRIEFING ===\n");
+            briefing.append("Repository: ").append(repo.getName()).append(" (").append(repo.getPath()).append(")\n");
+            if (!events.isEmpty()) {
+                AgentEvent lastEvent = events.get(0);
+                briefing.append("Last Active Event: [").append(lastEvent.getEventType()).append("] ")
+                        .append(lastEvent.getDescription() != null ? lastEvent.getDescription() : "").append("\n");
+            }
+            if (!attempts.isEmpty()) {
+                briefing.append("\nPrevious Engineering Trials:\n");
+                for (AgentAttempt att : attempts.stream().limit(3).toList()) {
+                    briefing.append(String.format("  • [%s] by %s: %s\n", att.getStatus(), att.getAgentName(), att.getTaskDescription()));
+                    briefing.append("    Approach: ").append(att.getApproach()).append("\n");
+                    if (att.getErrorMessage() != null && !att.getErrorMessage().isBlank()) {
+                        briefing.append("    Error: ").append(att.getErrorMessage()).append("\n");
+                    }
+                    if (att.getLessonLearned() != null && !att.getLessonLearned().isBlank()) {
+                        briefing.append("    Lesson: ").append(att.getLessonLearned()).append("\n");
+                    }
+                }
+            }
+            if (!openTasks.isEmpty()) {
+                briefing.append("\nRemaining Open Tasks:\n");
+                for (Task t : openTasks) {
+                    briefing.append("  [ ] ").append(t.getTitle()).append("\n");
+                }
+            }
+            state.put("structuredBriefing", briefing.toString());
         }
 
         return state;
@@ -282,6 +322,7 @@ public class AgentBridgeService {
                 .project(project)
                 .repository(repo)
                 .startedAt(LocalDateTime.now())
+                .status("active")
                 .build();
         return sessionRepository.save(newSession);
     }

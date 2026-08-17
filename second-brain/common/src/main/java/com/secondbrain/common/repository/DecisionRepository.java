@@ -14,6 +14,8 @@ public interface DecisionRepository extends JpaRepository<Decision, UUID> {
 
     List<Decision> findByRepositoryId(UUID repositoryId);
 
+    List<Decision> findByRepositoryIdOrderByCreatedAtDesc(UUID repositoryId);
+
     List<Decision> findByStatus(String status);
 
     List<Decision> findTop10ByOrderByCreatedAtDesc();

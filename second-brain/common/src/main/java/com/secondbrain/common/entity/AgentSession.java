@@ -33,7 +33,8 @@ public class AgentSession extends BaseEntity {
     private String task;
 
     @Column(nullable = false)
-    private String status;
+    @Builder.Default
+    private String status = "active";
 
     private LocalDateTime startedAt;
 
