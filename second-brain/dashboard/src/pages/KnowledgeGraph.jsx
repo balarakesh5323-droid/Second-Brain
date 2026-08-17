@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { brainApi } from '../api/client';
 import { Network, RefreshCw, Search, X } from 'lucide-react';
@@ -23,6 +23,7 @@ export default function KnowledgeGraph() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [search, setSearch] = useState('');
   const [labelFilter, setLabelFilter] = useState(null);
+  const [graphReady, setGraphReady] = useState(false);
   const fgRef = useRef();
 
   const { data, isLoading, refetch } = useQuery({
@@ -35,48 +36,67 @@ export default function KnowledgeGraph() {
     queryFn: () => brainApi.getGraphStats().then(r => r.data),
   });
 
-  const graphData = useMemo(() => {
-    if (!data) return { nodes: [], links: [] };
+  useEffect(() => {
+    setGraphReady(false);
+  }, [data, labelFilter, search]);
 
-    let nodes = data.nodes.map(n => ({
+  const graphData = useMemo(() => {
+    if (!data || !data.nodes || !data.edges) return { nodes: [], links: [] };
+
+    const nodes = (Array.isArray(data.nodes) ? data.nodes : []).map(n => ({
       id: n.id,
       label: n.label,
-      properties: n.properties,
+      properties: n.properties || {},
       color: getColor(n.label),
       size: 6,
     }));
 
-    let links = data.edges.map(e => ({
-      source: e.source,
-      target: e.target,
-      label: e.label,
-    }));
+    const nodeIdSet = new Set(nodes.map(n => n.id));
+
+    const links = (Array.isArray(data.edges) ? data.edges : [])
+      .filter(e => e.source && e.target && nodeIdSet.has(e.source) && nodeIdSet.has(e.target))
+      .map(e => ({
+        source: e.source,
+        target: e.target,
+        label: e.label,
+      }));
+
+    let filteredNodes = nodes;
+    let filteredLinks = links;
 
     if (labelFilter) {
-      const nodeIds = new Set(nodes.filter(n => n.label === labelFilter).map(n => n.id));
-      links = links.filter(l => nodeIds.has(l.source) || nodeIds.has(l.target));
+      const matchIds = new Set(nodes.filter(n => n.label === labelFilter).map(n => n.id));
+      filteredLinks = links.filter(l => matchIds.has(l.source) || matchIds.has(l.target));
       const connectedIds = new Set();
-      links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
-      nodes = nodes.filter(n => connectedIds.has(n.id));
+      filteredLinks.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
+      filteredNodes = nodes.filter(n => connectedIds.has(n.id));
     }
 
     if (search) {
       const q = search.toLowerCase();
-      const matchIds = new Set(nodes.filter(n =>
+      const matchIds = new Set(filteredNodes.filter(n =>
         n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q)
       ).map(n => n.id));
-      nodes = nodes.filter(n => matchIds.has(n.id));
-      links = links.filter(l => matchIds.has(l.source) || matchIds.has(l.target));
+      filteredNodes = filteredNodes.filter(n => matchIds.has(n.id));
+      filteredLinks = filteredLinks.filter(l => matchIds.has(l.source) || matchIds.has(l.target));
     }
 
-    return { nodes, links };
+    return { nodes: filteredNodes, links: filteredLinks };
   }, [data, labelFilter, search]);
+
+  useEffect(() => {
+    if (graphData.nodes.length > 0) {
+      const timer = setTimeout(() => setGraphReady(true), 100);
+      return () => clearTimeout(timer);
+    }
+  }, [graphData]);
 
   const handleNodeClick = useCallback((node) => {
     setSelectedNode(prev => prev?.id === node.id ? null : node);
   }, []);
 
   const nodeCanvasObject = useCallback((node, ctx) => {
+    if (!node || node.x == null || node.y == null) return;
     const size = node.size || 6;
     ctx.beginPath();
     ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
@@ -91,15 +111,17 @@ export default function KnowledgeGraph() {
       ctx.stroke();
     }
 
-    const label = node.id.length > 30 ? node.id.slice(0, 27) + '...' : node.id;
+    const label = node.id?.length > 30 ? node.id.slice(0, 27) + '...' : node.id;
     ctx.font = '3px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#d1d5db';
-    ctx.fillText(label, node.x, node.y + size + 2);
+    ctx.fillText(label || '', node.x, node.y + size + 2);
   }, [selectedNode]);
 
   const linkCanvasObject = useCallback((link, ctx) => {
+    if (!link?.source || !link?.target) return;
+    if (link.source.x == null || link.target.x == null) return;
     ctx.beginPath();
     ctx.moveTo(link.source.x, link.source.y);
     ctx.lineTo(link.target.x, link.target.y);
@@ -108,7 +130,7 @@ export default function KnowledgeGraph() {
     ctx.stroke();
   }, []);
 
-  const labels = stats?.labels || [];
+  const labels = Array.isArray(stats?.labels) ? stats.labels : [];
 
   return (
     <div className="space-y-4">
@@ -178,7 +200,7 @@ export default function KnowledgeGraph() {
               <Network className="w-12 h-12 opacity-30" />
               <p>No graph data found. Add a repository to populate the knowledge graph.</p>
             </div>
-          ) : (
+          ) : graphReady ? (
             <ReactForceGraph2D
               ref={fgRef}
               graphData={graphData}
@@ -188,13 +210,13 @@ export default function KnowledgeGraph() {
               nodeRelSize={6}
               linkDirectionalParticles={0}
               backgroundColor="#030712"
-              width={undefined}
-              height={undefined}
               d3AlphaDecay={0.02}
               d3VelocityDecay={0.3}
               warmupTicks={100}
               cooldownTicks={200}
             />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500">Initializing graph...</div>
           )}
         </div>
 
