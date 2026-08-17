@@ -14,5 +14,7 @@ public interface AgentHandoffRepository extends JpaRepository<AgentHandoff, UUID
 
     Optional<AgentHandoff> findFirstByRepositoryIdOrderByCreatedAtDesc(UUID repositoryId);
 
+    Optional<AgentHandoff> findFirstByOrderByCreatedAtDesc();
+
     java.util.List<AgentHandoff> findAllByOrderByCreatedAtDesc();
 }

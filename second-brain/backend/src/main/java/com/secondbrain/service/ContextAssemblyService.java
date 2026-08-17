@@ -58,10 +58,10 @@ public class ContextAssemblyService {
             }
         }
 
-        // Step 3: Search Qdrant (semantic vector search)
+        // Step 3: Search Qdrant (scoped semantic vector search)
         List<SearchResult> semanticResults = Collections.emptyList();
         try {
-            semanticResults = semanticSearchService.searchAllCollections(query, 20);
+            semanticResults = semanticSearchService.searchAllCollectionsScoped(query, resolvedProjectId, resolvedRepoId, 20);
         } catch (Exception e) {
             log.warn("Semantic search failed: {}", e.getMessage());
         }

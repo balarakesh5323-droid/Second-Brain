@@ -16,4 +16,10 @@ public interface AgentEventRepository extends JpaRepository<AgentEvent, UUID> {
     List<AgentEvent> findByEventType(EventType eventType);
 
     List<AgentEvent> findTop20ByOrderByCreatedAtDesc();
+
+    @org.springframework.data.jpa.repository.Query("SELECT e FROM AgentEvent e WHERE e.session.repository.id = :repositoryId ORDER BY e.createdAt DESC LIMIT 20")
+    List<AgentEvent> findTop20ByRepositoryIdOrderByCreatedAtDesc(@org.springframework.data.repository.query.Param("repositoryId") UUID repositoryId);
+
+    @org.springframework.data.jpa.repository.Query("SELECT e FROM AgentEvent e WHERE e.session.project.id = :projectId ORDER BY e.createdAt DESC LIMIT 20")
+    List<AgentEvent> findTop20ByProjectIdOrderByCreatedAtDesc(@org.springframework.data.repository.query.Param("projectId") UUID projectId);
 }

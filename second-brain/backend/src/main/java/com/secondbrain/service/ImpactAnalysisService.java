@@ -131,7 +131,7 @@ public class ImpactAnalysisService {
             recommendations.add("Architectural drift detected! Align implementation with registered Project Decisions.");
         }
         if (recommendations.isEmpty()) {
-            recommendations.add("No breaking call-site dependencies or decision conflicts detected. Safe to proceed.");
+            recommendations.add("No known breaking callers or decision conflicts found in indexed graph. Proceed with standard test suite verification.");
         }
         report.put("recommendations", recommendations);
 

@@ -190,7 +190,7 @@ public class AgentBridgeService {
             state.put("recentAttempts", attempts.stream().limit(5).toList());
 
             // Recent uncommitted / activity events
-            List<AgentEvent> events = eventRepository.findTop20ByOrderByCreatedAtDesc();
+            List<AgentEvent> events = eventRepository.findTop20ByRepositoryIdOrderByCreatedAtDesc(repo.getId());
             state.put("recentEvents", events.stream().limit(10).toList());
 
             // Open tasks
@@ -270,10 +270,10 @@ public class AgentBridgeService {
             ));
         }
 
-        // 3. Deep Scan workspace files with accurate metadata
-        String targetPath = (project != null && project.getPath() != null && !project.getPath().isBlank())
-                ? project.getPath()
-                : (repo != null && repo.getPath() != null ? repo.getPath() : null);
+        // 3. Deep Scan workspace files with accurate metadata (Repository path prioritized over project path)
+        String targetPath = (repo != null && repo.getPath() != null && !repo.getPath().isBlank())
+                ? repo.getPath()
+                : (project != null && project.getPath() != null ? project.getPath() : null);
 
         List<String> workspaceFiles = new ArrayList<>();
         int totalFilesCount = 0;
@@ -322,16 +322,13 @@ public class AgentBridgeService {
         state.put("workspace", workspaceMeta);
         state.put("workspaceFiles", workspaceFiles);
 
-        // 4. Latest handoff
+        // 4. Latest handoff (strictly ordered by recency)
         Optional<AgentHandoff> latestHandoff = Optional.empty();
         if (repo != null) {
             latestHandoff = handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repo.getId());
         }
         if (latestHandoff.isEmpty()) {
-            var allHandoffs = handoffRepository.findAll();
-            if (!allHandoffs.isEmpty()) {
-                latestHandoff = Optional.of(allHandoffs.get(allHandoffs.size() - 1));
-            }
+            latestHandoff = handoffRepository.findFirstByOrderByCreatedAtDesc();
         }
         latestHandoff.ifPresent(h -> state.put("latestHandoff", Map.of(
                 "task", h.getTask() != null ? h.getTask() : "",
@@ -485,16 +482,21 @@ public class AgentBridgeService {
             if (existing.isPresent()) return existing.get();
         }
 
-        // Check if there is an active session in the last 2 hours
+        // Check if there is an active session in the last 2 hours for this specific project / repository
         LocalDateTime recent = LocalDateTime.now().minusHours(2);
-        List<AgentSession> active = sessionRepository.findByAgentIdOrderByStartedAtDesc(agent.getId());
+        List<AgentSession> active = (repo != null && project != null)
+                ? sessionRepository.findByAgentIdAndProjectIdAndRepositoryIdOrderByStartedAtDesc(agent.getId(), project.getId(), repo.getId())
+                : (project != null
+                    ? sessionRepository.findByAgentIdAndProjectIdOrderByStartedAtDesc(agent.getId(), project.getId())
+                    : sessionRepository.findByAgentIdOrderByStartedAtDesc(agent.getId()));
+
         for (AgentSession s : active) {
             if (s.getEndedAt() == null && s.getStartedAt().isAfter(recent)) {
                 return s;
             }
         }
 
-        // Create new active session
+        // Create new active scoped session
         AgentSession newSession = AgentSession.builder()
                 .agent(agent)
                 .project(project)

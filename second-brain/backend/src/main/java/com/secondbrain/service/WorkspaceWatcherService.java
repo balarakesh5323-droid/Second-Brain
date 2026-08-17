@@ -39,6 +39,12 @@ public class WorkspaceWatcherService {
         return t;
     });
 
+    private final ExecutorService workerPool = Executors.newFixedThreadPool(4, r -> {
+        Thread t = new Thread(r, "workspace-file-worker");
+        t.setDaemon(true);
+        return t;
+    });
+
     private volatile boolean running = false;
 
     private static final Set<String> IGNORED_DIRS = Set.of(
@@ -122,7 +128,13 @@ public class WorkspaceWatcherService {
 
             for (WatchEvent<?> event : key.pollEvents()) {
                 WatchEvent.Kind<?> kind = event.kind();
-                if (kind == StandardWatchEventKinds.OVERFLOW) continue;
+                if (kind == StandardWatchEventKinds.OVERFLOW) {
+                    log.warn("Watcher OVERFLOW event in directory '{}', scheduling async project reconciliation", dir);
+                    if (projectId != null) {
+                        workerPool.submit(() -> reconcileProject(projectId));
+                    }
+                    continue;
+                }
 
                 @SuppressWarnings("unchecked")
                 WatchEvent<Path> ev = (WatchEvent<Path>) event;
@@ -157,9 +169,9 @@ public class WorkspaceWatcherService {
                 debounceMap.put(pathStr, now);
 
                 if (kind == StandardWatchEventKinds.ENTRY_CREATE || kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-                    handleFileChange(fullPath, projectId);
+                    workerPool.submit(() -> handleFileChange(fullPath, projectId));
                 } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                    handleFileDelete(fullPath, projectId);
+                    workerPool.submit(() -> handleFileDelete(fullPath, projectId));
                 }
             }
 
@@ -169,6 +181,37 @@ public class WorkspaceWatcherService {
                 pathToProjectId.remove(dir);
             }
         }
+    }
+
+    public void reconcileProject(UUID projectId) {
+        if (projectId == null) return;
+        var pOpt = projectRepository.findById(projectId);
+        if (pOpt.isEmpty() || pOpt.get().getPath() == null) return;
+        Path root = Paths.get(pOpt.get().getPath());
+        if (!Files.exists(root)) return;
+
+        log.info("Starting workspace reconciliation for project '{}'", pOpt.get().getName());
+        try (var stream = Files.walk(root, 5)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(f -> !f.toString().contains("/.git/") && !f.toString().contains("/target/") && !f.toString().contains("/node_modules/"))
+                    .forEach(f -> handleFileChange(f, projectId));
+        } catch (Exception e) {
+            log.warn("Reconciliation error for {}: {}", pOpt.get().getName(), e.getMessage());
+        }
+    }
+
+    private String computeFileId(Path filePath, UUID projectId) {
+        String projIdStr = projectId != null ? projectId.toString() : "global";
+        String relPath = filePath.getFileName().toString();
+        if (projectId != null) {
+            var p = projectRepository.findById(projectId);
+            if (p.isPresent() && p.get().getPath() != null) {
+                try {
+                    relPath = Paths.get(p.get().getPath()).relativize(filePath).toString();
+                } catch (Exception ignored) {}
+            }
+        }
+        return projIdStr + "::" + relPath;
     }
 
     private void handleFileChange(Path filePath, UUID projectId) {
@@ -182,9 +225,9 @@ public class WorkspaceWatcherService {
             if (structure == null) return;
 
             String projIdStr = projectId != null ? projectId.toString() : "global";
-            String fileId = projIdStr + "::" + fileName;
+            String fileId = computeFileId(filePath, projectId);
 
-            log.info("⚡ Instant Auto-Sync: Parsed file '{}' ({} functions) in workspace", fileName,
+            log.info("⚡ Instant Auto-Sync: Parsed file '{}' ({} functions) in workspace", fileId,
                     ((List<?>) structure.getOrDefault("functions", List.of())).size());
 
             // 1. Update File node in Neo4j
@@ -256,17 +299,20 @@ public class WorkspaceWatcherService {
         try {
             Map<String, String> detectedTech = new HashMap<>();
 
-            if (content.contains("@Cacheable") || content.contains("@CachePut") || content.contains("@CacheEvict") || content.contains("RedisTemplate")) {
-                detectedTech.put("Redis", "Caching Layer");
+            if (content.contains("RedisTemplate") || content.contains("StringRedisTemplate")) {
+                detectedTech.put("Redis", "In-Memory Key-Value Data Store");
+            }
+            if (content.contains("@Cacheable") || content.contains("@CachePut") || content.contains("@CacheEvict")) {
+                detectedTech.put("Spring Cache", "Caching Abstraction Layer");
             }
             if (content.contains("@KafkaListener") || content.contains("KafkaTemplate")) {
-                detectedTech.put("Kafka", "Event-Driven Messaging");
+                detectedTech.put("Kafka", "Event-Driven Messaging Stream");
             }
             if (content.contains("@RabbitListener") || content.contains("RabbitTemplate")) {
-                detectedTech.put("RabbitMQ", "Message Broker");
+                detectedTech.put("RabbitMQ", "AMQP Message Broker");
             }
             if (content.contains("@Transactional")) {
-                detectedTech.put("PostgreSQL", "ACID Transactional Persistence");
+                detectedTech.put("Spring Transaction", "Declarative ACID Transactions");
             }
             if (content.contains("@RestController") || content.contains("@GetMapping") || content.contains("@PostMapping")) {
                 detectedTech.put("Spring Web", "REST API Endpoint Gateway");
@@ -288,7 +334,7 @@ public class WorkspaceWatcherService {
                         "pattern", patternDesc
                 ));
                 graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
-                log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileName, techName, patternDesc);
+                log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileId, techName, patternDesc);
             }
         } catch (Exception e) {
             log.debug("Pattern extraction error on {}: {}", fileName, e.getMessage());
@@ -296,13 +342,11 @@ public class WorkspaceWatcherService {
     }
 
     private void handleFileDelete(Path filePath, UUID projectId) {
-        String projIdStr = projectId != null ? projectId.toString() : "global";
-        String fileName = filePath.getFileName().toString();
-        String fileId = projIdStr + "::" + fileName;
+        String fileId = computeFileId(filePath, projectId);
 
         try {
-            graphService.deleteNode(fileId);
-            log.info("⚡ Instant Auto-Sync: Removed deleted file node '{}' from graph", fileId);
+            graphService.deleteFileCascade(fileId);
+            log.info("⚡ Instant Auto-Sync: Cascaded delete of file node '{}' from graph", fileId);
         } catch (Exception e) {
             log.debug("Error deleting node {}: {}", fileId, e.getMessage());
         }
@@ -316,6 +360,7 @@ public class WorkspaceWatcherService {
                 watchService.close();
             } catch (IOException ignored) {}
         }
+        workerPool.shutdownNow();
         executor.shutdownNow();
     }
 }

@@ -76,95 +76,149 @@ public class BrainBackupService {
             return stats;
         }
 
-        // 1. Restore Projects
+        // Map old IDs to restored Project and Repository entities
+        Map<UUID, Project> projectMap = new HashMap<>();
+        Map<UUID, RepositoryEntity> repoMap = new HashMap<>();
+
+        // 1. Restore Projects (Idempotent by ID and Name)
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> projects = (List<Map<String, Object>>) snapshot.getOrDefault("projects", List.of());
         for (Map<String, Object> p : projects) {
             String name = (String) p.get("name");
+            UUID id = parseUUID(p.get("id"));
             if (name != null && !name.isBlank()) {
-                if (projectRepository.findByName(name).isEmpty()) {
-                    Project proj = Project.builder()
+                Project proj = null;
+                if (id != null && projectRepository.existsById(id)) {
+                    proj = projectRepository.findById(id).orElse(null);
+                } else if (projectRepository.findByName(name).isPresent()) {
+                    proj = projectRepository.findByName(name).get();
+                }
+
+                if (proj == null) {
+                    proj = Project.builder()
                             .name(name)
                             .description((String) p.get("description"))
                             .path((String) p.get("path"))
                             .status((String) p.getOrDefault("status", "active"))
                             .build();
-                    projectRepository.save(proj);
+                    if (id != null) proj.setId(id);
+                    proj = projectRepository.save(proj);
                     restoredProjects++;
                 }
+                if (id != null) projectMap.put(id, proj);
             }
         }
 
-        // 2. Restore Repositories
+        // 2. Restore Repositories (Idempotent by ID and Name)
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> repos = (List<Map<String, Object>>) snapshot.getOrDefault("repositories", List.of());
         for (Map<String, Object> r : repos) {
             String name = (String) r.get("name");
+            UUID id = parseUUID(r.get("id"));
+            UUID projId = parseNestedId(r.get("project"), r.get("projectId"));
+
             if (name != null && !name.isBlank()) {
-                if (repositoryRepository.findByName(name).isEmpty()) {
-                    RepositoryEntity repo = RepositoryEntity.builder()
+                RepositoryEntity repo = null;
+                if (id != null && repositoryRepository.existsById(id)) {
+                    repo = repositoryRepository.findById(id).orElse(null);
+                } else if (repositoryRepository.findByName(name).isPresent()) {
+                    repo = repositoryRepository.findByName(name).get();
+                }
+
+                if (repo == null) {
+                    repo = RepositoryEntity.builder()
                             .name(name)
                             .url((String) r.get("url"))
                             .path((String) r.get("path"))
                             .description((String) r.get("description"))
                             .primaryLanguage((String) r.getOrDefault("primaryLanguage", "Java"))
+                            .project(projId != null ? projectMap.get(projId) : null)
                             .build();
-                    repositoryRepository.save(repo);
+                    if (id != null) repo.setId(id);
+                    repo = repositoryRepository.save(repo);
                     restoredRepositories++;
                 }
+                if (id != null) repoMap.put(id, repo);
             }
         }
 
-        // 3. Restore Decisions
+        // 3. Restore Decisions (Idempotent by ID or Title)
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> decisions = (List<Map<String, Object>>) snapshot.getOrDefault("decisions", List.of());
         for (Map<String, Object> d : decisions) {
             String title = (String) d.get("title");
+            UUID id = parseUUID(d.get("id"));
+            UUID projId = parseNestedId(d.get("project"), d.get("projectId"));
+            UUID repoId = parseNestedId(d.get("repository"), d.get("repositoryId"));
+
             if (title != null && !title.isBlank()) {
-                Decision dec = Decision.builder()
-                        .title(title)
-                        .description((String) d.get("description"))
-                        .rationale((String) d.get("rationale"))
-                        .status((String) d.getOrDefault("status", "ACCEPTED"))
-                        .build();
-                decisionRepository.save(dec);
-                restoredDecisions++;
+                if (id == null || !decisionRepository.existsById(id)) {
+                    Decision dec = Decision.builder()
+                            .title(title)
+                            .description((String) d.get("description"))
+                            .rationale((String) d.get("rationale"))
+                            .status((String) d.getOrDefault("status", "ACCEPTED"))
+                            .project(projId != null ? projectMap.get(projId) : null)
+                            .repository(repoId != null ? repoMap.get(repoId) : null)
+                            .build();
+                    if (id != null) dec.setId(id);
+                    decisionRepository.save(dec);
+                    restoredDecisions++;
+                }
             }
         }
 
-        // 4. Restore Tasks
+        // 4. Restore Tasks (Idempotent by ID)
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> tasks = (List<Map<String, Object>>) snapshot.getOrDefault("tasks", List.of());
         for (Map<String, Object> t : tasks) {
             String title = (String) t.get("title");
+            UUID id = parseUUID(t.get("id"));
+            UUID projId = parseNestedId(t.get("project"), t.get("projectId"));
+            UUID repoId = parseNestedId(t.get("repository"), t.get("repositoryId"));
+
             if (title != null && !title.isBlank()) {
-                Task task = Task.builder()
-                        .title(title)
-                        .description((String) t.get("description"))
-                        .status(TaskStatus.OPEN)
-                        .priority(1)
-                        .build();
-                taskRepository.save(task);
-                restoredTasks++;
+                if (id == null || !taskRepository.existsById(id)) {
+                    Task task = Task.builder()
+                            .title(title)
+                            .description((String) t.get("description"))
+                            .status(TaskStatus.OPEN)
+                            .priority(1)
+                            .project(projId != null ? projectMap.get(projId) : null)
+                            .repository(repoId != null ? repoMap.get(repoId) : null)
+                            .build();
+                    if (id != null) task.setId(id);
+                    taskRepository.save(task);
+                    restoredTasks++;
+                }
             }
         }
 
-        // 5. Restore Memories
+        // 5. Restore Memories (Idempotent by ID)
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> memories = (List<Map<String, Object>>) snapshot.getOrDefault("memories", List.of());
         for (Map<String, Object> m : memories) {
             String content = (String) m.get("content");
+            UUID id = parseUUID(m.get("id"));
+            UUID projId = parseNestedId(m.get("project"), m.get("projectId"));
+            UUID repoId = parseNestedId(m.get("repository"), m.get("repositoryId"));
+
             if (content != null && !content.isBlank()) {
-                Memory mem = Memory.builder()
-                        .content(content)
-                        .type(MemoryType.valueOf((String) m.getOrDefault("type", "DECLARATIVE")))
-                        .scope(MemoryScope.valueOf((String) m.getOrDefault("scope", "GLOBAL")))
-                        .status(MemoryStatus.CONFIRMED)
-                        .confidence(0.9)
-                        .importance(0.8)
-                        .build();
-                memoryRepository.save(mem);
-                restoredMemories++;
+                if (id == null || !memoryRepository.existsById(id)) {
+                    Memory mem = Memory.builder()
+                            .content(content)
+                            .type(MemoryType.valueOf((String) m.getOrDefault("type", "DECLARATIVE")))
+                            .scope(MemoryScope.valueOf((String) m.getOrDefault("scope", "GLOBAL")))
+                            .status(MemoryStatus.CONFIRMED)
+                            .confidence(0.9)
+                            .importance(0.8)
+                            .project(projId != null ? projectMap.get(projId) : null)
+                            .repository(repoId != null ? repoMap.get(repoId) : null)
+                            .build();
+                    if (id != null) mem.setId(id);
+                    memoryRepository.save(mem);
+                    restoredMemories++;
+                }
             }
         }
 
@@ -173,15 +227,19 @@ public class BrainBackupService {
         List<Map<String, Object>> skills = (List<Map<String, Object>>) snapshot.getOrDefault("skills", List.of());
         for (Map<String, Object> s : skills) {
             String name = (String) s.get("name");
+            UUID id = parseUUID(s.get("id"));
             if (name != null && !name.isBlank()) {
-                Skill skill = Skill.builder()
-                        .name(name)
-                        .description((String) s.get("description"))
-                        .version((String) s.getOrDefault("version", "1.0.0"))
-                        .confidence(0.9)
-                        .build();
-                skillRepository.save(skill);
-                restoredSkills++;
+                if (id == null || !skillRepository.existsById(id)) {
+                    Skill skill = Skill.builder()
+                            .name(name)
+                            .description((String) s.get("description"))
+                            .version((String) s.getOrDefault("version", "1.0.0"))
+                            .confidence(0.9)
+                            .build();
+                    if (id != null) skill.setId(id);
+                    skillRepository.save(skill);
+                    restoredSkills++;
+                }
             }
         }
 
@@ -190,15 +248,19 @@ public class BrainBackupService {
         List<Map<String, Object>> techs = (List<Map<String, Object>>) snapshot.getOrDefault("technologies", List.of());
         for (Map<String, Object> tech : techs) {
             String name = (String) tech.get("name");
+            UUID id = parseUUID(tech.get("id"));
             if (name != null && !name.isBlank()) {
-                Technology t = Technology.builder()
-                        .name(name)
-                        .category((String) tech.getOrDefault("category", "framework"))
-                        .description((String) tech.get("description"))
-                        .experienceLevel((String) tech.getOrDefault("experienceLevel", "EXPERT"))
-                        .build();
-                technologyRepository.save(t);
-                restoredTechnologies++;
+                if (id == null || !technologyRepository.existsById(id)) {
+                    Technology t = Technology.builder()
+                            .name(name)
+                            .category((String) tech.getOrDefault("category", "framework"))
+                            .description((String) tech.get("description"))
+                            .experienceLevel((String) tech.getOrDefault("experienceLevel", "EXPERT"))
+                            .build();
+                    if (id != null) t.setId(id);
+                    technologyRepository.save(t);
+                    restoredTechnologies++;
+                }
             }
         }
 
@@ -207,17 +269,26 @@ public class BrainBackupService {
         List<Map<String, Object>> attempts = (List<Map<String, Object>>) snapshot.getOrDefault("attempts", List.of());
         for (Map<String, Object> att : attempts) {
             String approach = (String) att.get("approach");
+            UUID id = parseUUID(att.get("id"));
+            UUID projId = parseNestedId(att.get("project"), att.get("projectId"));
+            UUID repoId = parseNestedId(att.get("repository"), att.get("repositoryId"));
+
             if (approach != null && !approach.isBlank()) {
-                AgentAttempt a = AgentAttempt.builder()
-                        .agentName((String) att.getOrDefault("agentName", "ai-agent"))
-                        .taskDescription((String) att.getOrDefault("taskDescription", "Task trial"))
-                        .approach(approach)
-                        .status((String) att.getOrDefault("status", "SUCCESS"))
-                        .errorMessage((String) att.get("errorMessage"))
-                        .lessonLearned((String) att.get("lessonLearned"))
-                        .build();
-                attemptRepository.save(a);
-                restoredAttempts++;
+                if (id == null || !attemptRepository.existsById(id)) {
+                    AgentAttempt a = AgentAttempt.builder()
+                            .agentName((String) att.getOrDefault("agentName", "ai-agent"))
+                            .taskDescription((String) att.getOrDefault("taskDescription", "Task trial"))
+                            .approach(approach)
+                            .status((String) att.getOrDefault("status", "SUCCESS"))
+                            .errorMessage((String) att.get("errorMessage"))
+                            .lessonLearned((String) att.get("lessonLearned"))
+                            .project(projId != null ? projectMap.get(projId) : null)
+                            .repository(repoId != null ? repoMap.get(repoId) : null)
+                            .build();
+                    if (id != null) a.setId(id);
+                    attemptRepository.save(a);
+                    restoredAttempts++;
+                }
             }
         }
 
@@ -226,19 +297,26 @@ public class BrainBackupService {
         List<Map<String, Object>> handoffs = (List<Map<String, Object>>) snapshot.getOrDefault("handoffs", List.of());
         for (Map<String, Object> h : handoffs) {
             String taskDesc = (String) h.get("task");
+            UUID id = parseUUID(h.get("id"));
+            UUID repoId = parseNestedId(h.get("repository"), h.get("repositoryId"));
+
             if (taskDesc != null && !taskDesc.isBlank()) {
-                AgentHandoff handoff = AgentHandoff.builder()
-                        .task(taskDesc)
-                        .completedItems((String) h.get("completedItems"))
-                        .inProgressItems((String) h.get("inProgressItems"))
-                        .blockedItems((String) h.get("blockedItems"))
-                        .changedFiles((String) h.get("changedFiles"))
-                        .nextSteps((String) h.get("nextSteps"))
-                        .decisions((String) h.get("decisions"))
-                        .knownIssues((String) h.get("knownIssues"))
-                        .build();
-                handoffRepository.save(handoff);
-                restoredHandoffs++;
+                if (id == null || !handoffRepository.existsById(id)) {
+                    AgentHandoff handoff = AgentHandoff.builder()
+                            .task(taskDesc)
+                            .completedItems((String) h.get("completedItems"))
+                            .inProgressItems((String) h.get("inProgressItems"))
+                            .blockedItems((String) h.get("blockedItems"))
+                            .changedFiles((String) h.get("changedFiles"))
+                            .nextSteps((String) h.get("nextSteps"))
+                            .decisions((String) h.get("decisions"))
+                            .knownIssues((String) h.get("knownIssues"))
+                            .repository(repoId != null ? repoMap.get(repoId) : null)
+                            .build();
+                    if (id != null) handoff.setId(id);
+                    handoffRepository.save(handoff);
+                    restoredHandoffs++;
+                }
             }
         }
 
@@ -260,9 +338,29 @@ public class BrainBackupService {
         stats.put("restoredAttempts", restoredAttempts);
         stats.put("restoredHandoffs", restoredHandoffs);
 
-        log.info("Successfully imported full snapshot: {} projects, {} repos, {} decisions, {} tasks, {} memories, {} attempts, {} handoffs",
+        log.info("Successfully imported idempotent full snapshot: {} projects, {} repos, {} decisions, {} tasks, {} memories, {} attempts, {} handoffs",
                 restoredProjects, restoredRepositories, restoredDecisions, restoredTasks, restoredMemories, restoredAttempts, restoredHandoffs);
 
         return stats;
+    }
+
+    private UUID parseUUID(Object val) {
+        if (val == null) return null;
+        try {
+            return UUID.fromString(val.toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private UUID parseNestedId(Object nestedObj, Object directId) {
+        if (directId != null) {
+            UUID parsed = parseUUID(directId);
+            if (parsed != null) return parsed;
+        }
+        if (nestedObj instanceof Map<?, ?> map) {
+            return parseUUID(map.get("id"));
+        }
+        return null;
     }
 }

@@ -18,8 +18,14 @@ public class SemanticSearchService {
     private final EmbeddingService embeddingService;
 
     public List<SearchResult> search(String query, String collectionName, int limit) {
+        return searchScoped(query, collectionName, null, null, limit);
+    }
+
+    public List<SearchResult> searchScoped(String query, String collectionName, String projectId, String repositoryId, int limit) {
         float[] queryVector = embeddingService.embed(query);
-        List<Map<String, Object>> points = vectorStoreService.search(collectionName, queryVector, limit);
+        if (queryVector == null) return List.of();
+
+        List<Map<String, Object>> points = vectorStoreService.search(collectionName, queryVector, limit * 2);
         return points.stream()
             .map(point -> {
                 @SuppressWarnings("unchecked")
@@ -33,6 +39,22 @@ public class SemanticSearchService {
                     .payload(payload != null ? payload : Map.of())
                     .build();
             })
+            .filter(sr -> {
+                if (projectId == null && repositoryId == null) return true;
+                Map<String, Object> p = sr.getPayload();
+                if (p == null) return true;
+                String pointProj = String.valueOf(p.getOrDefault("projectId", p.getOrDefault("project", "")));
+                String pointRepo = String.valueOf(p.getOrDefault("repositoryId", p.getOrDefault("repository", "")));
+
+                if (projectId != null && !pointProj.isBlank() && !"global".equalsIgnoreCase(pointProj) && !pointProj.equalsIgnoreCase(projectId)) {
+                    return false;
+                }
+                if (repositoryId != null && !pointRepo.isBlank() && !"global".equalsIgnoreCase(pointRepo) && !pointRepo.equalsIgnoreCase(repositoryId)) {
+                    return false;
+                }
+                return true;
+            })
+            .limit(limit)
             .toList();
     }
 
@@ -41,6 +63,10 @@ public class SemanticSearchService {
     }
 
     public List<SearchResult> searchAllCollections(String query, int limit) {
+        return searchAllCollectionsScoped(query, null, null, limit);
+    }
+
+    public List<SearchResult> searchAllCollectionsScoped(String query, String projectId, String repositoryId, int limit) {
         List<SearchResult> allResults = new ArrayList<>();
         List<String> collections = List.of(
             "global_knowledge",
@@ -56,7 +82,7 @@ public class SemanticSearchService {
 
         for (String collection : collections) {
             try {
-                allResults.addAll(search(query, collection, limit));
+                allResults.addAll(searchScoped(query, collection, projectId, repositoryId, limit));
             } catch (Exception e) {
                 log.debug("Search failed on collection {}: {}", collection, e.getMessage());
             }

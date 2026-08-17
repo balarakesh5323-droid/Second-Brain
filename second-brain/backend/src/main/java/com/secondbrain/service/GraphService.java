@@ -129,9 +129,10 @@ public class GraphService {
 
     public List<Map<String, Object>> findRelated(String label, String id, String relType, int depth) {
         try (var session = driver.session()) {
+            String relFilter = (relType != null && !relType.isBlank()) ? ":" + relType : "";
             String cypher = String.format(
-                "MATCH (n:%s {id: $id})-[r*1..%d]-(m) RETURN DISTINCT m, length(r) as depth ORDER BY depth LIMIT 50",
-                label, depth
+                "MATCH (n:%s {id: $id})-[r%s*1..%d]-(m) RETURN DISTINCT m, length(r) as depth ORDER BY depth LIMIT 50",
+                label, relFilter, depth
             );
             var result = session.run(cypher, Map.of("id", id));
             List<Map<String, Object>> related = new ArrayList<>();
@@ -292,6 +293,19 @@ public class GraphService {
             log.info("Deleted node {} from Neo4j Knowledge Graph", id);
         } catch (Exception e) {
             log.error("Failed to delete node {}: {}", id, e.getMessage());
+        }
+    }
+
+    public void deleteFileCascade(String fileId) {
+        try (var session = driver.session()) {
+            session.run("""
+                MATCH (f:File {id: $fileId})
+                OPTIONAL MATCH (f)-[:DECLARES]->(child)
+                DETACH DELETE child, f
+                """, Map.of("fileId", fileId));
+            log.info("Cascaded deletion of file '{}' and declared children from Neo4j", fileId);
+        } catch (Exception e) {
+            log.error("Failed cascading deletion of file {}: {}", fileId, e.getMessage());
         }
     }
 

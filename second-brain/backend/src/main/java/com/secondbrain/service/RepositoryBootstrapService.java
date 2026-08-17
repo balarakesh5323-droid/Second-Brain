@@ -143,7 +143,7 @@ public class RepositoryBootstrapService {
 
         extCounts.forEach((ext, count) -> {
             String lang = extToLang.getOrDefault(ext, ext.toUpperCase());
-            if (count >= 2) languages.add(lang); // Require at least 2 files
+            if (count >= 1) languages.add(lang);
         });
 
         return new ArrayList<>(languages);

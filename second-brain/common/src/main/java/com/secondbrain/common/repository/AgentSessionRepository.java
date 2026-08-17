@@ -14,6 +14,10 @@ public interface AgentSessionRepository extends JpaRepository<AgentSession, UUID
 
     List<AgentSession> findByAgentIdOrderByStartedAtDesc(UUID agentId);
 
+    List<AgentSession> findByAgentIdAndProjectIdAndRepositoryIdOrderByStartedAtDesc(UUID agentId, UUID projectId, UUID repositoryId);
+
+    List<AgentSession> findByAgentIdAndProjectIdOrderByStartedAtDesc(UUID agentId, UUID projectId);
+
     List<AgentSession> findByRepositoryId(UUID repositoryId);
 
     List<AgentSession> findByProjectId(UUID projectId);
