@@ -19,6 +19,7 @@ import java.util.stream.Collectors;
 public class KnowledgeEvolutionWorker {
 
     private final MemoryRepository memoryRepository;
+    private final com.secondbrain.common.repository.TechnologyRepository technologyRepository;
 
     private static final int FREQUENT_USE_THRESHOLD = 5;
     private static final int RECENT_DAYS = 30;
@@ -65,6 +66,36 @@ public class KnowledgeEvolutionWorker {
                     memoryRepository.save(memory);
                 }
             }
+        }
+
+        // Evolve Technology experience & confidence
+        try {
+            List<com.secondbrain.common.entity.Technology> technologies = technologyRepository.findAll();
+            for (com.secondbrain.common.entity.Technology tech : technologies) {
+                int obs = tech.getObservationCount() != null ? tech.getObservationCount() : 1;
+                int projs = tech.getProjectCount() != null ? tech.getProjectCount() : 1;
+
+                if (obs >= 50 || projs >= 5) {
+                    tech.setExperienceLevel("CORE");
+                    tech.setConfidence(0.95);
+                } else if (obs >= 20 || projs >= 3) {
+                    tech.setExperienceLevel("EXPERT");
+                    tech.setConfidence(0.90);
+                } else if (obs >= 10 || projs >= 2) {
+                    tech.setExperienceLevel("ADVANCED");
+                    tech.setConfidence(0.80);
+                } else if (obs >= 5) {
+                    tech.setExperienceLevel("INTERMEDIATE");
+                    tech.setConfidence(0.70);
+                } else {
+                    tech.setExperienceLevel("BEGINNER");
+                    tech.setConfidence(0.50);
+                }
+                technologyRepository.save(tech);
+            }
+            log.info("Evolved experience levels for {} technologies", technologies.size());
+        } catch (Exception e) {
+            log.warn("Technology evolution skipped: {}", e.getMessage());
         }
 
         log.info("Knowledge evolution completed: {} promoted, {} demoted", promoted, demoted);

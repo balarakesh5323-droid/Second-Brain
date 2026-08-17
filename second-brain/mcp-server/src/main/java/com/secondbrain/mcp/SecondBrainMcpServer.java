@@ -303,6 +303,63 @@ public class SecondBrainMcpServer {
                     String repositoryId = (String) args.get("repository_id");
                     String query = (String) args.get("query");
                     return toolHandler.handleRepositoryContext(repositoryId, query);
+                }),
+
+            buildTool("brain_record_attempt",
+                "Record an engineering trial or attempt (what was tried, files modified, tests run, failures, error logs, and lessons learned). " +
+                "Subsequent agents can query this to avoid repeating failed approaches.",
+                "object", Map.ofEntries(
+                    Map.entry("agent_name", Map.of("type", "string", "description", "Name of the agent (e.g. claude-code, codex)")),
+                    Map.entry("task_description", Map.of("type", "string", "description", "Goal or task description")),
+                    Map.entry("approach", Map.of("type", "string", "description", "Approach or strategy attempted")),
+                    Map.entry("status", Map.of("type", "string", "description", "SUCCESS, FAILURE, ABORTED, or SUPERSEDED")),
+                    Map.entry("files_changed", Map.of("type", "array", "description", "List of modified files")),
+                    Map.entry("commands_executed", Map.of("type", "array", "description", "List of executed commands / test invocations")),
+                    Map.entry("working_tree_diff", Map.of("type", "string", "description", "Git working tree diff during attempt")),
+                    Map.entry("error_message", Map.of("type", "string", "description", "Error message or stacktrace if failed")),
+                    Map.entry("lesson_learned", Map.of("type", "string", "description", "Key engineering takeaway / lesson")),
+                    Map.entry("repository_id", Map.of("type", "string", "description", "Repository UUID")),
+                    Map.entry("project_id", Map.of("type", "string", "description", "Project UUID"))
+                ), List.of("task_description", "approach"),
+                (exchange, args) -> {
+                    String agentName = (String) args.get("agent_name");
+                    String taskDesc = (String) args.get("task_description");
+                    String approach = (String) args.get("approach");
+                    String status = (String) args.get("status");
+                    @SuppressWarnings("unchecked")
+                    List<String> files = args.get("files_changed") instanceof List ? (List<String>) args.get("files_changed") : null;
+                    @SuppressWarnings("unchecked")
+                    List<String> cmds = args.get("commands_executed") instanceof List ? (List<String>) args.get("commands_executed") : null;
+                    String diff = (String) args.get("working_tree_diff");
+                    String err = (String) args.get("error_message");
+                    String lesson = (String) args.get("lesson_learned");
+                    String repoId = (String) args.get("repository_id");
+                    String projId = (String) args.get("project_id");
+                    @SuppressWarnings("unchecked")
+                    List<String> tags = args.get("tags") instanceof List ? (List<String>) args.get("tags") : null;
+                    return toolHandler.handleRecordAttempt(agentName, taskDesc, approach, status, files, cmds, diff, err, lesson, repoId, projId, tags);
+                }),
+
+            buildTool("brain_get_attempts",
+                "Retrieve previous engineering attempts, failed approaches, error logs, and lessons learned for a repository or query.",
+                "object", Map.of(
+                    "repository_id", Map.of("type", "string", "description", "Optional repository UUID filter"),
+                    "limit", Map.of("type", "integer", "description", "Max attempts to retrieve (default 10)")
+                ), List.of(),
+                (exchange, args) -> {
+                    String repoId = (String) args.get("repository_id");
+                    int limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : 10;
+                    return toolHandler.handleGetAttempts(repoId, limit);
+                }),
+
+            buildTool("brain_get_continuity_state",
+                "One-shot multi-agent continuity state retrieval — returns active repository metadata, latest handoff, uncommitted diffs, recent test failures, and attempts.",
+                "object", Map.of(
+                    "repository_id_or_path", Map.of("type", "string", "description", "Repository UUID or working directory path")
+                ), List.of(),
+                (exchange, args) -> {
+                    String target = (String) args.get("repository_id_or_path");
+                    return toolHandler.handleGetContinuityState(target);
                 })
         );
     }

@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDateTime;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -26,4 +28,21 @@ public class Technology extends BaseEntity {
 
     @Column(columnDefinition = "text")
     private String description;
+
+    @Column(length = 32)
+    @Builder.Default
+    private String experienceLevel = "BEGINNER"; // BEGINNER, INTERMEDIATE, ADVANCED, EXPERT, CORE
+
+    @Builder.Default
+    private Double confidence = 0.5;
+
+    @Column(columnDefinition = "integer default 1")
+    @Builder.Default
+    private Integer observationCount = 1;
+
+    @Column(columnDefinition = "integer default 1")
+    @Builder.Default
+    private Integer projectCount = 1;
+
+    private LocalDateTime lastUsedAt;
 }

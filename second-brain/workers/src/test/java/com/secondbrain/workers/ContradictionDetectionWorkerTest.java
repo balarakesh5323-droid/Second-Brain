@@ -53,9 +53,9 @@ class ContradictionDetectionWorkerTest {
 
         contradictionDetectionWorker.detectContradictions();
 
-        // Lower confidence memory should be flagged
-        assertEquals(MemoryStatus.DEPRECATED, m2.getStatus(),
-            "Lower confidence contradictory memory should be deprecated");
+        // Lower confidence memory should be flagged as superseded
+        assertEquals(MemoryStatus.SUPERSEDED, m2.getStatus(),
+            "Lower confidence contradictory memory should be superseded");
     }
 
     @Test

@@ -79,6 +79,11 @@ export const brainApi = {
   // System Maintenance & Reset
   wipeWholeBrain: () => api.post('/system/wipe').then(r => r.data || {}),
 
+  // Agent Bridge & Attempts (Trials, Failures, Lessons Learned, Cross-Agent State)
+  getAgentAttempts: (repoId) => api.get(repoId ? `/bridge/attempts/repository/${repoId}` : '/bridge/attempts').then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
+  recordAgentAttempt: (data) => api.post('/bridge/attempts', data).then(r => r.data),
+  getContinuityState: (repo) => api.get(`/bridge/continuity?repo=${encodeURIComponent(repo || '')}`).then(r => r.data || {}).catch(() => ({})),
+
   // Health
   getHealth: () => api.get('/actuator/health').then(r => r.data || {}).catch(() => ({ status: 'UNKNOWN' })),
 };

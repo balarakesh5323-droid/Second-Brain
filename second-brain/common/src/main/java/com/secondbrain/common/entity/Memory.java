@@ -88,4 +88,22 @@ public class Memory extends BaseEntity {
     private LocalDateTime firstSeenAt;
 
     private LocalDateTime lastSeenAt;
+
+    private LocalDateTime lastConfirmedAt;
+
+    @Column(length = 64)
+    @Builder.Default
+    private String provenanceSource = "DEVELOPER_EXPLICIT"; // DEVELOPER_EXPLICIT, AGENT_EXPERIENCE, GIT_COMMIT, TEST_EXECUTION, AST_ANALYSIS
+
+    @Column(columnDefinition = "integer default 1")
+    @Builder.Default
+    private Integer evidenceCount = 1;
+
+    @Column(columnDefinition = "uuid")
+    private java.util.UUID supersededBy;
+
+    private LocalDateTime supersededAt;
+
+    @Column(columnDefinition = "text")
+    private String historicalContext;
 }

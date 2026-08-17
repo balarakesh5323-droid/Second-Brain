@@ -12,6 +12,7 @@ import com.secondbrain.service.BrainDoctorService;
 import com.secondbrain.service.RetrievalQualityService;
 import com.secondbrain.service.RepositoryIngestionService;
 import com.secondbrain.service.GitHubCloneService;
+import com.secondbrain.service.AgentBridgeService;
 import io.modelcontextprotocol.spec.McpSchema.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,8 @@ public class BrainToolHandler {
     private final AgentSessionRepository sessionRepository;
     private final AgentEventRepository eventRepository;
     private final AgentHandoffRepository handoffRepository;
+    private final AgentAttemptRepository attemptRepository;
+    private final AgentBridgeService agentBridgeService;
     private final DecisionRepository decisionRepository;
     private final TaskRepository taskRepository;
     private final ContextAssemblyService contextAssemblyService;
@@ -570,6 +573,88 @@ public class BrainToolHandler {
             return new CallToolResult(List.of(new TextContent(sb.toString())), false);
         } catch (Exception e) {
             log.error("Failed to get repository context", e);
+            return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleRecordAttempt(String agentName, String taskDescription, String approach,
+            String status, List<String> filesChanged, List<String> commandsExecuted,
+            String workingTreeDiff, String errorMessage, String lessonLearned,
+            String repositoryId, String projectId, List<String> tags) {
+        try {
+            var dto = AgentBridgeService.AgentAttemptDto.builder()
+                    .agentName(agentName != null ? agentName : "mcp-agent")
+                    .taskDescription(taskDescription)
+                    .approach(approach)
+                    .status(status != null ? status : "SUCCESS")
+                    .filesChanged(filesChanged)
+                    .commandsExecuted(commandsExecuted)
+                    .workingTreeDiff(workingTreeDiff)
+                    .errorMessage(errorMessage)
+                    .lessonLearned(lessonLearned)
+                    .repositoryId(repositoryId)
+                    .projectId(projectId)
+                    .tags(tags != null ? new HashSet<>(tags) : new HashSet<>())
+                    .build();
+
+            AgentAttempt attempt = agentBridgeService.recordAttempt(dto);
+            return new CallToolResult(List.of(new TextContent(
+                    "Engineering attempt recorded with ID: " + attempt.getId() + " [Status: " + attempt.getStatus() + "]")), false);
+        } catch (Exception e) {
+            log.error("Failed to record agent attempt", e);
+            return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetAttempts(String repositoryId, int limit) {
+        try {
+            List<AgentAttempt> attempts;
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                attempts = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(UUID.fromString(repositoryId));
+            } else {
+                attempts = attemptRepository.findAllOrderByCreatedAtDesc();
+            }
+
+            if (attempts.isEmpty()) {
+                return new CallToolResult(List.of(new TextContent("No prior engineering attempts found.")), false);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Previous Engineering Attempts & Trials ===\n\n");
+            int count = 0;
+            for (AgentAttempt a : attempts) {
+                if (count >= limit) break;
+                sb.append(String.format("Attempt #%d [%s] by %s at %s\n", count + 1, a.getStatus(), a.getAgentName(), a.getCreatedAt()));
+                sb.append("Task: ").append(a.getTaskDescription()).append("\n");
+                sb.append("Approach: ").append(a.getApproach()).append("\n");
+                if (a.getErrorMessage() != null && !a.getErrorMessage().isBlank()) {
+                    sb.append("Error Encountered: ").append(a.getErrorMessage()).append("\n");
+                }
+                if (a.getLessonLearned() != null && !a.getLessonLearned().isBlank()) {
+                    sb.append("Lesson Learned: ").append(a.getLessonLearned()).append("\n");
+                }
+                if (!a.getFilesChanged().isEmpty()) {
+                    sb.append("Files Touched: ").append(String.join(", ", a.getFilesChanged())).append("\n");
+                }
+                sb.append("\n");
+                count++;
+            }
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to get agent attempts", e);
+            return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetContinuityState(String repositoryIdOrPath) {
+        try {
+            Map<String, Object> state = agentBridgeService.getContinuityState(repositoryIdOrPath);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(state);
+            return new CallToolResult(List.of(new TextContent(
+                    "=== Multi-Agent Continuity Snapshot ===\n\n" + json)), false);
+        } catch (Exception e) {
+            log.error("Failed to get continuity state", e);
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }
     }

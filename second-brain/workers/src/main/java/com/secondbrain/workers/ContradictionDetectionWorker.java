@@ -64,12 +64,20 @@ public class ContradictionDetectionWorker {
                         log.warn("Potential contradiction detected between memories {} and {}: \n  A: {}\n  B: {}",
                             m1.getId(), m2.getId(), m1.getContent(), m2.getContent());
 
-                        // Flag the older/lower-confidence memory for review
-                        Memory toFlag = pickMemoryToFlag(m1, m2);
-                        if (toFlag != null && toFlag.getStatus() != MemoryStatus.DEPRECATED) {
-                            toFlag.setStatus(MemoryStatus.DEPRECATED);
-                            memoryRepository.save(toFlag);
-                            log.info("Flagged memory {} as deprecated due to contradiction", toFlag.getId());
+                        Memory older = pickMemoryToFlag(m1, m2);
+                        Memory newer = (older == m1) ? m2 : m1;
+                        if (older != null && older.getStatus() != MemoryStatus.SUPERSEDED) {
+                            older.setStatus(MemoryStatus.SUPERSEDED);
+                            older.setSupersededBy(newer.getId());
+                            older.setSupersededAt(java.time.LocalDateTime.now());
+                            older.setHistoricalContext("Historically recorded: \"" + older.getContent() + "\". Superseded by: \"" + newer.getContent() + "\"");
+                            memoryRepository.save(older);
+
+                            newer.setEvidenceCount((newer.getEvidenceCount() != null ? newer.getEvidenceCount() : 1) + 1);
+                            newer.setHistoricalContext("Current active standard. Supersedes historical practice: \"" + older.getContent() + "\"");
+                            memoryRepository.save(newer);
+
+                            log.info("Resolved contradiction: Superseded memory {} with newer canonical memory {}", older.getId(), newer.getId());
                         }
                     }
                 }

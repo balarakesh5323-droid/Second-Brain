@@ -11,4 +11,5 @@ import java.util.UUID;
 public interface RepositoryEntityRepository extends JpaRepository<RepositoryEntity, UUID> {
     Optional<RepositoryEntity> findByUrl(String url);
     Optional<RepositoryEntity> findByName(String name);
+    Optional<RepositoryEntity> findByPath(String path);
 }

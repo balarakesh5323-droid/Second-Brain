@@ -20,6 +20,7 @@ public class BrainMaintenanceService {
     private final TaskRepository taskRepository;
     private final AgentEventRepository agentEventRepository;
     private final AgentHandoffRepository agentHandoffRepository;
+    private final AgentAttemptRepository agentAttemptRepository;
     private final AgentSessionRepository agentSessionRepository;
     private final AgentRepository agentRepository;
     private final SkillRepository skillRepository;
@@ -54,6 +55,7 @@ public class BrainMaintenanceService {
         // 2. Wipe PostgreSQL relational data in correct dependency order
         try {
             agentHandoffRepository.deleteAll();
+            agentAttemptRepository.deleteAll();
             agentEventRepository.deleteAll();
             agentSessionRepository.deleteAll();
             memoryRepository.deleteAll();
