@@ -32,5 +32,6 @@ public class RepositoryEntity extends BaseEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id")
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Project project;
 }

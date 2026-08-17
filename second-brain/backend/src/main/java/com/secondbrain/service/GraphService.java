@@ -286,6 +286,15 @@ public class GraphService {
         }
     }
 
+    public void deleteNode(String id) {
+        try (var session = driver.session()) {
+            session.run("MATCH (n {id: $id}) DETACH DELETE n", Map.of("id", id));
+            log.info("Deleted node {} from Neo4j Knowledge Graph", id);
+        } catch (Exception e) {
+            log.error("Failed to delete node {}: {}", id, e.getMessage());
+        }
+    }
+
     public void wipeAll() {
         try (var session = driver.session()) {
             session.run("MATCH (n) DETACH DELETE n");

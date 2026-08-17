@@ -61,6 +61,13 @@ export const brainApi = {
   getHandoffs: () => safeArray(api.get('/handoffs')),
   getLatestHandoff: (repoId) => api.get(`/handoffs/repository/${repoId}/latest`).then(r => r.data || null).catch(() => null),
   
+  // Documents & Media (PDFs, Markdown Specs, Architecture Images)
+  getProjectDocuments: (projectId) => api.get(`/documents/project/${projectId}`).then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
+  getAllDocuments: () => api.get('/documents').then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
+  uploadProjectDocument: (projectId, formData) => api.post(`/documents/project/${projectId}/upload`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data),
+  createProjectNote: (projectId, noteData) => api.post(`/documents/project/${projectId}/note`, noteData).then(r => r.data),
+  deleteDocument: (id) => api.delete(`/documents/${id}`),
+  
   // Context & NL Query
   askBrain: (query, projectId, repositoryId) => api.post('/context/ask', { query, projectId, repositoryId }).then(r => r.data || {}).catch(err => ({ error: err.message })),
   assembleContext: (query, projectId, repositoryId) => api.post('/context/assemble', { query, projectId, repositoryId }).then(r => r.data || {}).catch(() => ({})),

@@ -17,19 +17,21 @@ import {
   AlertTriangle,
   Loader2,
   X,
-  CheckCircle2
+  CheckCircle2,
+  FileText,
 } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
   { path: '/chat', label: 'Brain Chat', icon: Sparkles },
+  { path: '/documents', label: 'Docs & Images', icon: FileText },
   { path: '/memory', label: 'Memory', icon: Database },
   { path: '/agents', label: 'Agents', icon: Users },
   { path: '/repositories', label: 'Repositories', icon: GitBranch },
   { path: '/graph', label: 'Graph', icon: Network },
   { path: '/skills', label: 'Skills', icon: Zap },
   { path: '/handoffs', label: 'Handoffs', icon: ArrowRightLeft },
-  { path: '/docs', label: 'Docs', icon: BookOpen },
+  { path: '/docs', label: 'Guides', icon: BookOpen },
 ];
 
 export default function Layout() {

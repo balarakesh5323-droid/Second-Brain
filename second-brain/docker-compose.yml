@@ -40,10 +40,10 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && echo -e \"GET /healthz HTTP/1.0\\r\\n\\r\\n\" >&3 && cat <&3 | grep -q 200'"]
+      test: ["CMD-SHELL", "grep -q '18BD' /proc/net/tcp"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
 
   minio:
     image: minio/minio:latest

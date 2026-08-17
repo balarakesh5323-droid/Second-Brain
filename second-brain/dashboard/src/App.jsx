@@ -9,6 +9,7 @@ import HandoffsView from './pages/HandoffsView';
 import KnowledgeGraph from './pages/KnowledgeGraph';
 import Documentation from './pages/Documentation';
 import BrainChat from './pages/BrainChat';
+import ProjectDocuments from './pages/ProjectDocuments';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route index element={<Home />} />
           <Route path="chat" element={<BrainChat />} />
           <Route path="memory" element={<MemoryExplorer />} />
+          <Route path="documents" element={<ProjectDocuments />} />
           <Route path="agents" element={<AgentActivity />} />
           <Route path="repositories" element={<RepositoryExplorer />} />
           <Route path="graph" element={<KnowledgeGraph />} />

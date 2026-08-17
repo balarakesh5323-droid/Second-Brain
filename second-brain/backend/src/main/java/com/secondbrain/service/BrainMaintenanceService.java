@@ -23,6 +23,7 @@ public class BrainMaintenanceService {
     private final AgentSessionRepository agentSessionRepository;
     private final AgentRepository agentRepository;
     private final SkillRepository skillRepository;
+    private final ProjectDocumentRepository projectDocumentRepository;
     private final RepositoryEntityRepository repositoryEntityRepository;
     private final ProjectRepository projectRepository;
     private final DeveloperRepository developerRepository;
@@ -44,6 +45,7 @@ public class BrainMaintenanceService {
         long eventCount = agentEventRepository.count();
         long handoffCount = agentHandoffRepository.count();
         long sessionCount = agentSessionRepository.count();
+        long docCount = projectDocumentRepository.count();
         long repoCount = repositoryEntityRepository.count();
         long projectCount = projectRepository.count();
         long agentCount = agentRepository.count();
@@ -58,6 +60,7 @@ public class BrainMaintenanceService {
             decisionRepository.deleteAll();
             taskRepository.deleteAll();
             skillRepository.deleteAll();
+            projectDocumentRepository.deleteAll();
             agentRepository.deleteAll();
             repositoryEntityRepository.deleteAll();
             projectRepository.deleteAll();
