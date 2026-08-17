@@ -41,4 +41,11 @@ public class RedisService {
     public Set<String> keys(String pattern) {
         return redisTemplate.keys(pattern);
     }
+
+    public void flushAll() {
+        Set<String> keys = redisTemplate.keys("*");
+        if (keys != null && !keys.isEmpty()) {
+            redisTemplate.delete(keys);
+        }
+    }
 }

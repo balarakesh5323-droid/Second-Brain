@@ -66,6 +66,9 @@ export const brainApi = {
   syncRepository: (repoId) => api.post(`/repository-intel/sync/${repoId}`).then(r => r.data || {}),
   getGitHookScript: (serverUrl) => api.get('/repository-intel/git-hook-script', { params: { serverUrl } }).then(r => r.data || {}),
 
+  // System Maintenance & Reset
+  wipeWholeBrain: () => api.post('/system/wipe').then(r => r.data || {}),
+
   // Health
   getHealth: () => api.get('/actuator/health').then(r => r.data || {}).catch(() => ({ status: 'UNKNOWN' })),
 };

@@ -286,6 +286,15 @@ public class GraphService {
         }
     }
 
+    public void wipeAll() {
+        try (var session = driver.session()) {
+            session.run("MATCH (n) DETACH DELETE n");
+            log.info("Wiped all nodes and relationships from Neo4j Knowledge Graph");
+        } catch (Exception e) {
+            log.error("Failed to wipe Neo4j knowledge graph: {}", e.getMessage());
+        }
+    }
+
     @PreDestroy
     public void close() {
         if (driver != null) {

@@ -140,6 +140,18 @@ public class VectorStoreService {
         }
     }
 
+    public void wipeAllCollections() {
+        for (String collectionName : COLLECTIONS) {
+            try {
+                qdrantClient.deleteCollectionAsync(collectionName).get();
+                log.info("Deleted Qdrant collection {}", collectionName);
+            } catch (Exception e) {
+                log.warn("Failed to delete Qdrant collection {}: {}", collectionName, e.getMessage());
+            }
+        }
+        ensureCollectionsExist();
+    }
+
     @PreDestroy
     public void close() {
         if (qdrantClient != null) {
