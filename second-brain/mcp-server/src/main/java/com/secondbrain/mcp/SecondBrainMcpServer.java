@@ -241,13 +241,32 @@ public class SecondBrainMcpServer {
                 }),
 
             buildTool("brain_knowledge_graph",
-                "Query the knowledge graph",
+                "Query the knowledge graph — list nodes by label or traverse relationships from a specific node",
                 "object", Map.of(
-                    "label", Map.of("type", "string", "description", "Node label"),
-                    "id", Map.of("type", "string", "description", "Node ID"),
-                    "depth", Map.of("type", "integer", "description", "Traversal depth")
+                    "label", Map.of("type", "string", "description", "Node label (Project, Repository, Technology, Agent, Memory, etc.)"),
+                    "id", Map.of("type", "string", "description", "Specific node ID to traverse from (omit to list all nodes of the label)"),
+                    "depth", Map.of("type", "integer", "description", "Traversal depth (default 2)")
                 ), List.of("label"),
-                (exchange, args) -> new CallToolResult(List.of(new TextContent("Knowledge graph not yet implemented")), false))
+                (exchange, args) -> {
+                    String label = (String) args.get("label");
+                    String id = (String) args.get("id");
+                    Integer depth = args.containsKey("depth") ? ((Number) args.get("depth")).intValue() : null;
+                    return toolHandler.handleKnowledgeGraph(label, id, depth);
+                }),
+
+            buildTool("brain_get_context",
+                "Assemble full context for a query — searches memories, graph, events, decisions, tasks, and handoffs, then deduplicates and ranks",
+                "object", Map.of(
+                    "query", Map.of("type", "string", "description", "Natural language query to assemble context for"),
+                    "project_id", Map.of("type", "string", "description", "Optional project UUID to scope results"),
+                    "repository_id", Map.of("type", "string", "description", "Optional repository UUID to scope results")
+                ), List.of("query"),
+                (exchange, args) -> {
+                    String query = (String) args.get("query");
+                    String projectId = (String) args.get("project_id");
+                    String repositoryId = (String) args.get("repository_id");
+                    return toolHandler.handleGetContext(query, projectId, repositoryId);
+                })
         );
     }
 

@@ -1,9 +1,13 @@
 package com.secondbrain.mcp.tools;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.secondbrain.common.dto.ContextResponse;
 import com.secondbrain.common.dto.SearchResult;
 import com.secondbrain.common.entity.*;
 import com.secondbrain.common.enums.*;
 import com.secondbrain.common.repository.*;
+import com.secondbrain.service.ContextAssemblyService;
+import com.secondbrain.service.GraphService;
 import io.modelcontextprotocol.spec.McpSchema.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +30,9 @@ public class BrainToolHandler {
     private final AgentHandoffRepository handoffRepository;
     private final DecisionRepository decisionRepository;
     private final TaskRepository taskRepository;
+    private final ContextAssemblyService contextAssemblyService;
+    private final GraphService graphService;
+    private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
         try {
@@ -344,6 +351,77 @@ public class BrainToolHandler {
             return new CallToolResult(List.of(new TextContent(sb.toString())), false);
         } catch (Exception e) {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetContext(String query, String projectId, String repositoryId) {
+        try {
+            ContextResponse context = contextAssemblyService.assembleContext(query, projectId, repositoryId);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(context);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Failed to assemble context", e);
+            return new CallToolResult(List.of(new TextContent("Error assembling context: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleKnowledgeGraph(String label, String id, Integer depth) {
+        try {
+            int traversDepth = depth != null ? depth : 2;
+
+            if (id != null && !id.isBlank()) {
+                // Find related nodes for a specific node
+                List<Map<String, Object>> related = graphService.findRelated(label, id, null, traversDepth);
+                StringBuilder sb = new StringBuilder();
+                sb.append("Knowledge Graph — ").append(label).append(" (").append(id).append(")\n");
+                sb.append("Traversal depth: ").append(traversDepth).append("\n\n");
+
+                if (related.isEmpty()) {
+                    sb.append("No related nodes found.\n");
+                } else {
+                    sb.append("Related nodes:\n");
+                    for (Map<String, Object> node : related) {
+                        sb.append("- ").append(node.getOrDefault("id", "unknown"));
+                        if (node.containsKey("depth")) {
+                            sb.append(" (depth: ").append(node.get("depth")).append(")");
+                        }
+                        sb.append("\n");
+                        // Show all properties
+                        node.forEach((key, value) -> {
+                            if (!"id".equals(key) && !"depth".equals(key)) {
+                                sb.append("  ").append(key).append(": ").append(value).append("\n");
+                            }
+                        });
+                        sb.append("\n");
+                    }
+                }
+                return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+
+            } else {
+                // List nodes by label
+                List<Map<String, Object>> nodes = graphService.getNodesByLabel(label, 50);
+                StringBuilder sb = new StringBuilder();
+                sb.append("Knowledge Graph — All ").append(label).append(" nodes\n\n");
+
+                if (nodes.isEmpty()) {
+                    sb.append("No nodes found with label: ").append(label).append("\n");
+                } else {
+                    sb.append("Found ").append(nodes.size()).append(" nodes:\n\n");
+                    for (Map<String, Object> node : nodes) {
+                        sb.append("- ").append(node.getOrDefault("id", "unknown")).append("\n");
+                        node.forEach((key, value) -> {
+                            if (!"id".equals(key)) {
+                                sb.append("  ").append(key).append(": ").append(value).append("\n");
+                            }
+                        });
+                        sb.append("\n");
+                    }
+                }
+                return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+            }
+        } catch (Exception e) {
+            log.error("Knowledge graph query failed", e);
+            return new CallToolResult(List.of(new TextContent("Error querying knowledge graph: " + e.getMessage())), true);
         }
     }
 }
