@@ -13,8 +13,11 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -37,6 +40,8 @@ public class WorkspaceWatcherService {
     private final Map<Path, UUID> pathToRepositoryId = new ConcurrentHashMap<>();
     private final Map<String, Long> debounceMap = new ConcurrentHashMap<>();
     private final Map<String, Long> fileWriteVersions = new ConcurrentHashMap<>();
+    private final Map<String, String> indexedContentHashes = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>> fileTechPatterns = new ConcurrentHashMap<>();
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "workspace-file-watcher");
@@ -56,6 +61,15 @@ public class WorkspaceWatcherService {
             ".git", "node_modules", "target", "build", "dist", ".gradle",
             "__pycache__", ".idea", ".vscode", "vendor"
     );
+
+    public record RepositoryContext(
+            UUID repositoryId,
+            UUID projectId,
+            String repositoryPath,
+            String branch,
+            String headCommit,
+            String workingTreeState
+    ) {}
 
     @EventListener(ApplicationReadyEvent.class)
     public void startWatcher() {
@@ -192,21 +206,14 @@ public class WorkspaceWatcherService {
                 }
                 debounceMap.put(pathStr, now);
 
-                // Version tracking: monotonic timestamp to reject stale out-of-order writes in workerPool
+                // Monotonically increasing version counter for race-safe worker execution
                 long eventVersion = System.nanoTime();
                 fileWriteVersions.put(pathStr, eventVersion);
 
                 if (kind == StandardWatchEventKinds.ENTRY_CREATE || kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-                    workerPool.submit(() -> {
-                        // Check if a newer event arrived for this file while waiting in pool
-                        Long currentVer = fileWriteVersions.get(pathStr);
-                        if (currentVer != null && currentVer > eventVersion) {
-                            return; // Newer version will handle this file
-                        }
-                        handleFileChange(fullPath, projectId, repoId);
-                    });
+                    workerPool.submit(() -> handleFileChange(fullPath, projectId, repoId, eventVersion, null));
                 } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                    workerPool.submit(() -> handleFileDelete(fullPath, projectId, repoId));
+                    workerPool.submit(() -> handleFileDelete(fullPath, projectId, repoId, eventVersion));
                 }
             }
 
@@ -219,6 +226,23 @@ public class WorkspaceWatcherService {
         }
     }
 
+    public RepositoryContext resolveRepositoryContext(UUID repoId, UUID projectId, Path root) {
+        String repoPath = root.toString();
+        String branch = "main";
+        String headCommit = "uncommitted";
+        String workingTreeState = "CLEAN";
+
+        try {
+            branch = gitService.getCurrentBranch(repoPath);
+            List<Map<String, Object>> commits = gitService.getRecentCommits(repoPath, 1);
+            if (!commits.isEmpty()) {
+                headCommit = (String) commits.get(0).getOrDefault("hash", "uncommitted");
+            }
+        } catch (Exception ignored) {}
+
+        return new RepositoryContext(repoId, projectId, repoPath, branch, headCommit, workingTreeState);
+    }
+
     public void reconcileRepository(UUID repoId) {
         if (repoId == null) return;
         var rOpt = repositoryRepository.findById(repoId);
@@ -227,7 +251,8 @@ public class WorkspaceWatcherService {
         if (!Files.exists(root)) return;
 
         UUID projId = rOpt.get().getProject() != null ? rOpt.get().getProject().getId() : null;
-        reconcilePath(root, projId, repoId, "repo::" + repoId.toString());
+        RepositoryContext ctx = resolveRepositoryContext(repoId, projId, root);
+        reconcilePath(root, projId, repoId, "repo::" + repoId.toString(), ctx);
     }
 
     public void reconcileProject(UUID projectId) {
@@ -237,11 +262,12 @@ public class WorkspaceWatcherService {
         Path root = Paths.get(pOpt.get().getPath());
         if (!Files.exists(root)) return;
 
-        reconcilePath(root, projectId, null, "proj::" + projectId.toString());
+        RepositoryContext ctx = resolveRepositoryContext(null, projectId, root);
+        reconcilePath(root, projectId, null, "proj::" + projectId.toString(), ctx);
     }
 
-    private void reconcilePath(Path root, UUID projectId, UUID repoId, String prefix) {
-        log.info("Starting complete workspace reconciliation (no depth cap) for prefix '{}' at {}", prefix, root);
+    private void reconcilePath(Path root, UUID projectId, UUID repoId, String prefix, RepositoryContext ctx) {
+        log.info("Starting complete incremental reconciliation for prefix '{}' at {}", prefix, root);
         Set<Path> diskFiles = new HashSet<>();
 
         // 1. Walk entire disk tree unconstrained (filtering ignored dirs)
@@ -276,14 +302,18 @@ public class WorkspaceWatcherService {
                 Path p = Paths.get(pStr).toAbsolutePath().normalize();
                 if (!diskFiles.contains(p) && !Files.exists(p)) {
                     log.info("Reconciliation: Detected deleted file '{}', removing from brain", indexed.get("id"));
-                    handleFileDelete(p, projectId, repoId);
+                    long deleteVersion = System.nanoTime();
+                    fileWriteVersions.put(p.toString(), deleteVersion);
+                    handleFileDelete(p, projectId, repoId, deleteVersion);
                 }
             }
         }
 
-        // 3. Process all existing files
+        // 3. Process existing files incrementally (using cached Git context)
         for (Path f : diskFiles) {
-            handleFileChange(f, projectId, repoId);
+            long ver = System.nanoTime();
+            fileWriteVersions.put(f.toString(), ver);
+            handleFileChange(f, projectId, repoId, ver, ctx);
         }
     }
 
@@ -309,48 +339,93 @@ public class WorkspaceWatcherService {
         return "global::" + relPath;
     }
 
-    private void handleFileChange(Path filePath, UUID projectId, UUID repoId) {
+    public static String computeHash(String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return String.valueOf(content.hashCode());
+        }
+    }
+
+    private void handleFileChange(Path filePath, UUID projectId, UUID repoId, long eventVersion, RepositoryContext cachedCtx) {
+        String pathStr = filePath.toString();
+
+        // 1. Pre-execution version validation
+        Long currentVer = fileWriteVersions.get(pathStr);
+        if (currentVer != null && currentVer > eventVersion) {
+            log.debug("Skipping stale queued write for file: {} (queued: {}, current: {})", pathStr, eventVersion, currentVer);
+            return;
+        }
+
         if (Files.isDirectory(filePath) || !Files.exists(filePath)) return;
         String fileName = filePath.getFileName().toString();
         if (fileName.startsWith(".") || fileName.endsWith("~") || fileName.endsWith(".tmp")) return;
 
         try {
             String content = Files.readString(filePath);
-            Map<String, Object> structure = languageParserFactory.parseFile(filePath.toString(), content);
-            if (structure == null) return;
+            String contentHash = computeHash(content);
 
             String projIdStr = projectId != null ? projectId.toString() : "";
             String repoIdStr = repoId != null ? repoId.toString() : "";
             String fileId = computeFileId(filePath, projectId, repoId);
 
-            // Fetch Git branch and commit metadata
-            String branch = "main";
-            String commitSha = "uncommitted";
-            try {
-                String repoDir = repoId != null && repositoryRepository.findById(repoId).isPresent()
-                        ? repositoryRepository.findById(repoId).get().getPath()
-                        : (projectId != null && projectRepository.findById(projectId).isPresent()
-                            ? projectRepository.findById(projectId).get().getPath()
-                            : null);
-                if (repoDir != null) {
-                    branch = gitService.getCurrentBranch(repoDir);
-                    List<Map<String, Object>> commits = gitService.getRecentCommits(repoDir, 1);
-                    if (!commits.isEmpty()) {
-                        commitSha = (String) commits.get(0).getOrDefault("hash", "uncommitted");
+            // 2. Incremental Content-Hash Check: Skip unchanged files
+            String previousHash = indexedContentHashes.get(fileId);
+            if (contentHash.equals(previousHash)) {
+                log.debug("Incremental Indexing: File '{}' content unchanged (hash: {}), skipping re-indexing", fileId, contentHash);
+                return;
+            }
+
+            Map<String, Object> structure = languageParserFactory.parseFile(filePath.toString(), content);
+            if (structure == null) return;
+
+            // Resolve Git metadata (using cached context if available)
+            String branch = cachedCtx != null ? cachedCtx.branch() : "main";
+            String commitSha = cachedCtx != null ? cachedCtx.headCommit() : "uncommitted";
+            if (cachedCtx == null) {
+                try {
+                    String repoDir = repoId != null && repositoryRepository.findById(repoId).isPresent()
+                            ? repositoryRepository.findById(repoId).get().getPath()
+                            : (projectId != null && projectRepository.findById(projectId).isPresent()
+                                ? projectRepository.findById(projectId).get().getPath()
+                                : null);
+                    if (repoDir != null) {
+                        branch = gitService.getCurrentBranch(repoDir);
+                        List<Map<String, Object>> commits = gitService.getRecentCommits(repoDir, 1);
+                        if (!commits.isEmpty()) {
+                            commitSha = (String) commits.get(0).getOrDefault("hash", "uncommitted");
+                        }
                     }
-                }
-            } catch (Exception ignored) {}
+                } catch (Exception ignored) {}
+            }
 
-            log.info("⚡ Instant Auto-Sync: Parsed file '{}' (branch: {}, commit: {}) ({} functions)", fileId,
-                    branch, commitSha, ((List<?>) structure.getOrDefault("functions", List.of())).size());
+            // 3. Pre-Commit Monotonic Race Check: Verify no newer write or delete arrived during parsing/embedding
+            Long latestVer = fileWriteVersions.get(pathStr);
+            if (latestVer != null && latestVer > eventVersion) {
+                log.info("Discarding completed parse for '{}' as newer event superseded it (event: {}, latest: {})", fileId, eventVersion, latestVer);
+                return;
+            }
 
-            // 1. Update File node in Neo4j
+            log.info("⚡ Instant Auto-Sync: Committing file '{}' (hash: {}, branch: {}, commit: {}) ({} functions)",
+                    fileId, contentHash.substring(0, 8), branch, commitSha,
+                    ((List<?>) structure.getOrDefault("functions", List.of())).size());
+
+            // A. Update File node in Neo4j
             graphService.createNode("File", fileId, Map.of(
                     "name", fileName,
                     "path", filePath.toString(),
                     "language", structure.getOrDefault("language", "unknown"),
                     "branch", branch,
-                    "commitSha", commitSha
+                    "commitSha", commitSha,
+                    "contentHash", contentHash
             ));
 
             if (repoId != null) {
@@ -359,7 +434,7 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("Project", projIdStr, "File", fileId, "CONTAINS", null);
             }
 
-            // 2. Update Functions in Neo4j & Qdrant
+            // B. Update Functions in Neo4j & Qdrant
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> functions = (List<Map<String, Object>>) structure.getOrDefault("functions", List.of());
             for (Map<String, Object> func : functions) {
@@ -397,7 +472,7 @@ public class WorkspaceWatcherService {
                 } catch (Exception ignored) {}
             }
 
-            // 3. Update Classes in Neo4j
+            // C. Update Classes in Neo4j
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> classes = (List<Map<String, Object>>) structure.getOrDefault("classes", List.of());
             for (Map<String, Object> cls : classes) {
@@ -412,8 +487,11 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("File", fileId, "Class", clsId, "DECLARES", null);
             }
 
-            // 4. Architectural Event-to-Knowledge Discovery Pipeline
+            // D. Deduplicated Architectural Pattern Discovery
             extractArchitecturalPatterns(content, fileName, fileId, projIdStr, repoIdStr);
+
+            // Record successful indexing hash
+            indexedContentHashes.put(fileId, contentHash);
 
         } catch (Exception e) {
             log.debug("Auto-sync error on {}: {}", filePath, e.getMessage());
@@ -449,24 +527,37 @@ public class WorkspaceWatcherService {
                 detectedTech.put("HTML5 Canvas", "2D Interactive Graphics Engine");
             }
 
+            Set<String> alreadyKnown = fileTechPatterns.computeIfAbsent(fileId, k -> ConcurrentHashMap.newKeySet());
+
             for (Map.Entry<String, String> entry : detectedTech.entrySet()) {
                 String techName = entry.getKey();
                 String patternDesc = entry.getValue();
-                String techId = "tech::" + techName.toLowerCase().replaceAll("[^a-z0-9]", "_");
 
-                graphService.createNode("Technology", techId, Map.of(
-                        "name", techName,
-                        "pattern", patternDesc
-                ));
-                graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
-                log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileId, techName, patternDesc);
+                if (alreadyKnown.add(techName)) {
+                    String techId = "tech::" + techName.toLowerCase().replaceAll("[^a-z0-9]", "_");
+                    graphService.createNode("Technology", techId, Map.of(
+                            "name", techName,
+                            "pattern", patternDesc
+                    ));
+                    graphService.createRelationship("File", fileId, "Technology", techId, "USES_TECHNOLOGY", Map.of("pattern", patternDesc));
+                    log.info("🧠 Event-to-Knowledge Pipeline: Linked file '{}' -> Technology '{}' ({})", fileId, techName, patternDesc);
+                }
             }
         } catch (Exception e) {
             log.debug("Pattern extraction error on {}: {}", fileName, e.getMessage());
         }
     }
 
-    private void handleFileDelete(Path filePath, UUID projectId, UUID repoId) {
+    private void handleFileDelete(Path filePath, UUID projectId, UUID repoId, long deleteVersion) {
+        String pathStr = filePath.toString();
+
+        // Check if a newer modify event arrived after this delete was requested
+        Long latestVer = fileWriteVersions.get(pathStr);
+        if (latestVer != null && latestVer > deleteVersion) {
+            log.info("Discarding delete for '{}' as newer write event arrived (del: {}, latest: {})", pathStr, deleteVersion, latestVer);
+            return;
+        }
+
         String fileId = computeFileId(filePath, projectId, repoId);
 
         try {
@@ -476,6 +567,10 @@ public class WorkspaceWatcherService {
             // 2. Delete vectors from Qdrant
             vectorStoreService.deleteByFile("symbol_knowledge", fileId);
             vectorStoreService.deleteByFile("code_knowledge", fileId);
+
+            // 3. Clear indexing and pattern caches
+            indexedContentHashes.remove(fileId);
+            fileTechPatterns.remove(fileId);
 
             log.info("⚡ Instant Auto-Sync: Cascaded delete of file node '{}' and vectors from Qdrant", fileId);
         } catch (Exception e) {

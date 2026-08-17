@@ -5,10 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -28,7 +25,7 @@ public class SemanticSearchService {
 
         // Native Qdrant filter pushdown: filters vectors before top-K distance scoring
         Map<String, String> mustFilters = new HashMap<>();
-        if (!"global_knowledge".equalsIgnoreCase(collectionName)) {
+        if (!"global_knowledge".equalsIgnoreCase(collectionName) && !"documentation".equalsIgnoreCase(collectionName)) {
             if (repositoryId != null && !repositoryId.isBlank()) {
                 mustFilters.put("repositoryId", repositoryId);
             } else if (projectId != null && !projectId.isBlank()) {
@@ -61,8 +58,16 @@ public class SemanticSearchService {
         return searchAllCollectionsScoped(query, null, null, limit);
     }
 
+    /**
+     * Hierarchical multi-scope knowledge retrieval:
+     * 1. Repository-level knowledge (Weight: 1.0)
+     * 2. Project-level knowledge (Weight: 0.8)
+     * 3. Global & Documentation knowledge (Weight: 0.6)
+     * Reranks and deduplicates before returning top matches.
+     */
     public List<SearchResult> searchAllCollectionsScoped(String query, String projectId, String repositoryId, int limit) {
-        List<SearchResult> allResults = new ArrayList<>();
+        Map<String, SearchResult> mergedMap = new HashMap<>();
+
         List<String> collections = List.of(
             "global_knowledge",
             "project_knowledge",
@@ -75,15 +80,61 @@ public class SemanticSearchService {
             "documentation"
         );
 
-        for (String collection : collections) {
-            try {
-                allResults.addAll(searchScoped(query, collection, projectId, repositoryId, limit));
-            } catch (Exception e) {
-                log.debug("Search failed on collection {}: {}", collection, e.getMessage());
+        // Tier 1: Repository Scope (Weight 1.0)
+        if (repositoryId != null && !repositoryId.isBlank()) {
+            for (String col : collections) {
+                try {
+                    List<SearchResult> res = searchScoped(query, col, projectId, repositoryId, limit);
+                    for (SearchResult r : res) {
+                        mergedMap.put(r.getId(), r);
+                    }
+                } catch (Exception ignored) {}
             }
         }
 
-        allResults.sort((a, b) -> Float.compare(b.getScore(), a.getScore()));
-        return allResults.stream().limit(limit).toList();
+        // Tier 2: Project Scope (Weight 0.8)
+        if (projectId != null && !projectId.isBlank()) {
+            for (String col : collections) {
+                try {
+                    List<SearchResult> res = searchScoped(query, col, projectId, null, limit);
+                    for (SearchResult r : res) {
+                        if (!mergedMap.containsKey(r.getId())) {
+                            SearchResult weighted = SearchResult.builder()
+                                    .id(r.getId())
+                                    .score(r.getScore() * 0.8f)
+                                    .collection(r.getCollection())
+                                    .content(r.getContent())
+                                    .payload(r.getPayload())
+                                    .build();
+                            mergedMap.put(r.getId(), weighted);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // Tier 3: Global Knowledge & Technical Documentation (Weight 0.6)
+        List<String> globalCols = List.of("global_knowledge", "documentation", "technical_memory");
+        for (String col : globalCols) {
+            try {
+                List<SearchResult> res = searchScoped(query, col, null, null, limit);
+                for (SearchResult r : res) {
+                    if (!mergedMap.containsKey(r.getId())) {
+                        SearchResult weighted = SearchResult.builder()
+                                .id(r.getId())
+                                .score(r.getScore() * 0.6f)
+                                .collection(r.getCollection())
+                                .content(r.getContent())
+                                .payload(r.getPayload())
+                                .build();
+                        mergedMap.put(r.getId(), weighted);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        List<SearchResult> finalResults = new ArrayList<>(mergedMap.values());
+        finalResults.sort((a, b) -> Float.compare(b.getScore(), a.getScore()));
+        return finalResults.stream().limit(limit).toList();
     }
 }
