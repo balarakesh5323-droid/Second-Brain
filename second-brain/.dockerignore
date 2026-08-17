@@ -5,3 +5,8 @@ build
 *.iml
 .env
 .env.local
+node_modules
+dashboard/node_modules
+dashboard/dist
+dashboard/playwright-report
+**/test
