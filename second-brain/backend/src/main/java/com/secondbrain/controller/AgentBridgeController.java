@@ -49,6 +49,25 @@ public class AgentBridgeController {
         return ResponseEntity.status(HttpStatus.CREATED).body(bridgeService.recordFullSession(payload));
     }
 
+    @PostMapping("/session/start")
+    public ResponseEntity<Map<String, Object>> startSession(@RequestBody AgentBridgeService.StartSessionPayload payload) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(bridgeService.startSession(payload));
+    }
+
+    @PostMapping("/session/{sessionId}/event")
+    public ResponseEntity<Map<String, Object>> appendSessionEvent(
+            @PathVariable UUID sessionId,
+            @RequestBody AgentBridgeService.SessionEventPayload payload) {
+        return ResponseEntity.ok(bridgeService.appendSessionEvent(sessionId, payload));
+    }
+
+    @PostMapping("/session/{sessionId}/complete")
+    public ResponseEntity<Map<String, Object>> completeSession(
+            @PathVariable UUID sessionId,
+            @RequestBody AgentBridgeService.CompleteSessionPayload payload) {
+        return ResponseEntity.ok(bridgeService.completeSession(sessionId, payload));
+    }
+
     @GetMapping("/timeline")
     public ResponseEntity<List<Map<String, Object>>> getAgentTimeline(
             @RequestParam(value = "repo", required = false) String repo,

@@ -628,6 +628,301 @@ public class AgentBridgeService {
         private Map<String, Object> handoff;
     }
 
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class StartSessionPayload {
+        private String agentName;
+        private String agentType;
+        private String repositoryIdOrPath;
+        private String projectId;
+        private String branch;
+        private String task;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SessionEventPayload {
+        private String eventType; // "DECISION", "PROBLEM", "FAILED_ATTEMPT", "FILE_TOUCHED", "COMMIT"
+        private Map<String, Object> decision;
+        private Map<String, Object> problem;
+        private Map<String, Object> failedAttempt;
+        private Map<String, Object> commit;
+        private String filePath;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CompleteSessionPayload {
+        private String status; // "COMPLETED", "FAILED"
+        private String summary;
+        private Map<String, Object> handoff;
+    }
+
+    @Transactional
+    public Map<String, Object> startSession(StartSessionPayload payload) {
+        log.info("Starting active agent session for '{}' on repo '{}'", payload.getAgentName(), payload.getRepositoryIdOrPath());
+
+        String agentName = (payload.getAgentName() != null && !payload.getAgentName().isBlank())
+                ? payload.getAgentName() : "unknown-agent";
+        String agentType = payload.getAgentType() != null ? payload.getAgentType() :
+                (agentName.toLowerCase().contains("claude") ? "CLAUDE_CODE" :
+                 agentName.toLowerCase().contains("codex") ? "CODEX" :
+                 agentName.toLowerCase().contains("cursor") ? "CURSOR" : "CLI");
+
+        Agent agent = agentRepository.findByName(agentName).orElseGet(() -> {
+            Agent newAgent = Agent.builder().name(agentName).type(agentType).build();
+            return agentRepository.save(newAgent);
+        });
+
+        RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
+        Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
+
+        LocalDateTime startedAt = LocalDateTime.now();
+        AgentSession session = AgentSession.builder()
+                .agent(agent)
+                .repository(repo)
+                .project(project)
+                .task(payload.getTask() != null ? payload.getTask() : "Autonomous Session")
+                .status(com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name())
+                .startedAt(startedAt)
+                .endedAt(null)
+                .build();
+        session = sessionRepository.save(session);
+        UUID sessionId = session.getId();
+
+        String repoIdStr = repo != null ? repo.getId().toString() : null;
+        Map<String, Object> sessionProps = new HashMap<>();
+        sessionProps.put("status", com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name());
+        sessionProps.put("startedAt", startedAt.toString());
+        sessionProps.put("branch", payload.getBranch() != null ? payload.getBranch() : "main");
+
+        graphService.recordAgentSessionGraph(
+                agentName,
+                agentType,
+                sessionId.toString(),
+                sessionProps,
+                repoIdStr,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                null
+        );
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("status", "success");
+        res.put("sessionId", sessionId);
+        res.put("sessionStatus", com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name());
+        res.put("startedAt", startedAt);
+        return res;
+    }
+
+    @Transactional
+    public Map<String, Object> appendSessionEvent(UUID sessionId, SessionEventPayload payload) {
+        AgentSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+
+        Agent agent = session.getAgent();
+        RepositoryEntity repo = session.getRepository();
+        Project project = session.getProject();
+        String agentName = agent != null ? agent.getName() : "unknown-agent";
+        String repoIdStr = repo != null ? repo.getId().toString() : null;
+
+        List<Map<String, Object>> problemsGraph = new ArrayList<>();
+        List<Map<String, Object>> decisionsGraph = new ArrayList<>();
+        List<Map<String, Object>> failedAttemptsGraph = new ArrayList<>();
+        List<Map<String, Object>> commitsGraph = new ArrayList<>();
+        List<String> touchedFiles = new ArrayList<>();
+
+        if (payload.getProblem() != null) {
+            problemsGraph.add(payload.getProblem());
+        }
+
+        if (payload.getDecision() != null) {
+            Map<String, Object> d = payload.getDecision();
+            Decision decision = Decision.builder()
+                    .title((String) d.getOrDefault("title", "Architectural Decision"))
+                    .rationale((String) d.getOrDefault("rationale", ""))
+                    .project(project)
+                    .repository(repo)
+                    .status("approved")
+                    .build();
+            decision = decisionRepository.save(decision);
+            String canonicalDecId = "dec::" + decision.getId().toString();
+
+            Map<String, Object> decGraph = new HashMap<>(d);
+            decGraph.put("id", canonicalDecId);
+            decisionsGraph.add(decGraph);
+
+            try {
+                String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
+                        decision.getTitle(), decision.getTitle(), decision.getRationale());
+                float[] vec = embeddingService.embed(doc);
+                if (vec != null) {
+                    String pointId = decision.getId().toString();
+                    Map<String, String> p = new HashMap<>();
+                    p.put("title", decision.getTitle());
+                    p.put("doc", doc);
+                    if (repo != null) p.put("repositoryId", repo.getId().toString());
+                    vectorStoreService.upsert("decision_knowledge", pointId, vec, p, Map.of());
+                }
+            } catch (Exception e) {
+                log.error("Failed to vectorize decision {}: {}", decision.getId(), e.getMessage());
+                throw new IllegalStateException("Failed to vectorize decision " + decision.getId(), e);
+            }
+        }
+
+        if (payload.getFailedAttempt() != null) {
+            Map<String, Object> fa = payload.getFailedAttempt();
+            AgentAttempt attempt = AgentAttempt.builder()
+                    .agentName(agentName)
+                    .taskDescription((String) fa.getOrDefault("task", session.getTask()))
+                    .approach((String) fa.getOrDefault("approach", "Trial"))
+                    .status("FAILED")
+                    .errorMessage((String) fa.get("errorMessage"))
+                    .lessonLearned((String) fa.get("lessonLearned"))
+                    .session(session)
+                    .repository(repo)
+                    .project(project)
+                    .build();
+            attempt = attemptRepository.save(attempt);
+            String canonicalFailId = "fail::" + attempt.getId().toString();
+
+            Map<String, Object> faGraph = new HashMap<>(fa);
+            faGraph.put("id", canonicalFailId);
+            failedAttemptsGraph.add(faGraph);
+
+            try {
+                String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
+                        agentName, repo != null ? repo.getName() : "repo",
+                        fa.get("approach"), fa.get("errorMessage"), fa.get("lessonLearned"));
+                float[] vec = embeddingService.embed(doc);
+                if (vec != null) {
+                    String pointId = attempt.getId().toString();
+                    Map<String, String> p = new HashMap<>();
+                    p.put("agentName", agentName);
+                    p.put("type", "failed_attempt");
+                    p.put("doc", doc);
+                    if (repo != null) p.put("repositoryId", repo.getId().toString());
+                    vectorStoreService.upsert("agent_memory", pointId, vec, p, Map.of());
+                }
+            } catch (Exception e) {
+                log.error("Failed to vectorize failed attempt {}: {}", attempt.getId(), e.getMessage());
+                throw new IllegalStateException("Failed to vectorize failed attempt " + attempt.getId(), e);
+            }
+        }
+
+        if (payload.getCommit() != null) {
+            commitsGraph.add(payload.getCommit());
+        }
+
+        if (payload.getFilePath() != null && !payload.getFilePath().isBlank()) {
+            touchedFiles.add(payload.getFilePath());
+        }
+
+        graphService.recordAgentSessionGraph(
+                agentName,
+                agent != null ? agent.getType() : "CLI",
+                sessionId.toString(),
+                Map.of(),
+                repoIdStr,
+                touchedFiles,
+                problemsGraph,
+                decisionsGraph,
+                failedAttemptsGraph,
+                commitsGraph,
+                null
+        );
+
+        Map<String, Object> res = new HashMap<>();
+        res.put("status", "success");
+        res.put("sessionId", sessionId);
+        res.put("eventType", payload.getEventType());
+        return res;
+    }
+
+    @Transactional
+    public Map<String, Object> completeSession(UUID sessionId, CompleteSessionPayload payload) {
+        AgentSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+
+        String rawStatus = payload.getStatus() != null ? payload.getStatus().trim().toUpperCase() : "COMPLETED";
+        com.secondbrain.common.enums.AgentSessionStatus statusEnum;
+        try {
+            statusEnum = com.secondbrain.common.enums.AgentSessionStatus.valueOf(rawStatus);
+        } catch (Exception e) {
+            statusEnum = com.secondbrain.common.enums.AgentSessionStatus.COMPLETED;
+        }
+
+        LocalDateTime endedAt = LocalDateTime.now();
+        session.setStatus(statusEnum.name());
+        session.setEndedAt(endedAt);
+        if (payload.getSummary() != null) {
+            session.setSummary(payload.getSummary());
+        }
+        sessionRepository.save(session);
+
+        Agent agent = session.getAgent();
+        RepositoryEntity repo = session.getRepository();
+        Project project = session.getProject();
+        String agentName = agent != null ? agent.getName() : "unknown-agent";
+        String repoIdStr = repo != null ? repo.getId().toString() : null;
+
+        Map<String, Object> handoffGraphProps = null;
+        if (payload.getHandoff() != null && !payload.getHandoff().isEmpty()) {
+            Map<String, Object> h = payload.getHandoff();
+            AgentHandoff handoff = AgentHandoff.builder()
+                    .agent(agent)
+                    .session(session)
+                    .repository(repo)
+                    .project(project)
+                    .task((String) h.getOrDefault("task", session.getTask()))
+                    .completedItems((String) h.getOrDefault("completedItems", ""))
+                    .inProgressItems((String) h.getOrDefault("inProgressItems", ""))
+                    .blockedItems((String) h.getOrDefault("blockedItems", ""))
+                    .nextSteps((String) h.getOrDefault("nextSteps", ""))
+                    .changedFiles("")
+                    .build();
+            handoff = handoffRepository.save(handoff);
+
+            handoffGraphProps = new HashMap<>(h);
+            handoffGraphProps.put("id", "handoff::" + handoff.getId().toString());
+        }
+
+        Map<String, Object> sessionProps = new HashMap<>();
+        sessionProps.put("status", statusEnum.name());
+        sessionProps.put("endedAt", endedAt.toString());
+        if (payload.getSummary() != null) sessionProps.put("summary", payload.getSummary());
+
+        graphService.recordAgentSessionGraph(
+                agentName,
+                agent != null ? agent.getType() : "CLI",
+                sessionId.toString(),
+                sessionProps,
+                repoIdStr,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                handoffGraphProps
+        );
+
+        Map<String, Object> res = new HashMap<>();
+        res.put("status", "success");
+        res.put("sessionId", sessionId);
+        res.put("sessionStatus", statusEnum.name());
+        res.put("endedAt", endedAt);
+        return res;
+    }
+
     @Transactional
     public Map<String, Object> recordFullSession(FullSessionPayload payload) {
         log.info("Recording complete Agent Activity Session for agent '{}' on repo '{}'",
@@ -653,11 +948,23 @@ public class AgentBridgeService {
         RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
         Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
 
-        // 3. Create Persistent JPA AgentSession with accurate lifecycle
+        // 3. Create Persistent JPA AgentSession with accurate lifecycle & validation
         LocalDateTime startedAt = payload.getStartedAt() != null ? payload.getStartedAt() : LocalDateTime.now();
-        String sessionStatus = payload.getStatus() != null ? payload.getStatus() : "completed";
-        LocalDateTime endedAt = ("completed".equalsIgnoreCase(sessionStatus) || "failed".equalsIgnoreCase(sessionStatus))
+        String rawStatus = payload.getStatus() != null ? payload.getStatus().trim().toUpperCase() : "COMPLETED";
+        com.secondbrain.common.enums.AgentSessionStatus statusEnum;
+        try {
+            statusEnum = com.secondbrain.common.enums.AgentSessionStatus.valueOf(rawStatus);
+        } catch (Exception e) {
+            statusEnum = com.secondbrain.common.enums.AgentSessionStatus.COMPLETED;
+        }
+        String sessionStatus = statusEnum.name();
+
+        LocalDateTime endedAt = (statusEnum == com.secondbrain.common.enums.AgentSessionStatus.COMPLETED || statusEnum == com.secondbrain.common.enums.AgentSessionStatus.FAILED)
                 ? (payload.getEndedAt() != null ? payload.getEndedAt() : LocalDateTime.now()) : null;
+
+        if (endedAt != null && endedAt.isBefore(startedAt)) {
+            throw new IllegalArgumentException("endedAt cannot be before startedAt");
+        }
 
         AgentSession session = AgentSession.builder()
                 .agent(agent)
@@ -732,7 +1039,10 @@ public class AgentBridgeService {
                         if (repo != null) p.put("repositoryId", repo.getId().toString());
                         vectorStoreService.upsert("agent_memory", pointId, vec, p, Map.of());
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    log.error("Failed to vectorize failed attempt {}: {}", attempt.getId(), e.getMessage());
+                    throw new IllegalStateException("Failed to vectorize failed attempt " + attempt.getId(), e);
+                }
             }
         }
 
@@ -767,12 +1077,15 @@ public class AgentBridgeService {
                         if (repo != null) p.put("repositoryId", repo.getId().toString());
                         vectorStoreService.upsert("decision_knowledge", pointId, vec, p, Map.of());
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    log.error("Failed to vectorize decision {}: {}", decision.getId(), e.getMessage());
+                    throw new IllegalStateException("Failed to vectorize decision " + decision.getId(), e);
+                }
             }
         }
 
         // 7. Commit Full Graph into Neo4j
-        String repoIdStr = repo != null ? repo.getId().toString() : "";
+        String repoIdStr = repo != null ? repo.getId().toString() : null;
         Map<String, Object> sessionProps = new HashMap<>();
         sessionProps.put("summary", payload.getTaskSummary() != null ? payload.getTaskSummary() : "");
         sessionProps.put("status", sessionStatus);
