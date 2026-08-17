@@ -266,7 +266,17 @@ public class SecondBrainMcpServer {
                     String projectId = (String) args.get("project_id");
                     String repositoryId = (String) args.get("repository_id");
                     return toolHandler.handleGetContext(query, projectId, repositoryId);
-                })
+                }),
+
+            buildTool("brain_doctor",
+                "Run health diagnostics on all Second Brain services (PostgreSQL, Redis, Qdrant, Neo4j, MinIO)",
+                "object", Map.of(), List.of(),
+                (exchange, args) -> toolHandler.handleBrainDoctor()),
+
+            buildTool("brain_evaluate_quality",
+                "Evaluate retrieval quality against a test dataset of developer questions (precision, recall, F1)",
+                "object", Map.of(), List.of(),
+                (exchange, args) -> toolHandler.handleEvaluateQuality())
         );
     }
 

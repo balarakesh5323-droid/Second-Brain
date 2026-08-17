@@ -1,0 +1,294 @@
+package com.secondbrain.cli;
+
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.stereotype.Component;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+
+@Component
+@Command(
+    name = "brain",
+    description = "Second Brain CLI - interact with your knowledge base",
+    mixinStandardHelpOptions = true,
+    version = "1.0.0",
+    subcommands = {
+        BrainCli.SearchCommand.class,
+        BrainCli.AskCommand.class,
+        BrainCli.RememberCommand.class,
+        BrainCli.ProjectsCommand.class,
+        BrainCli.TasksCommand.class,
+        BrainCli.DecisionsCommand.class,
+        BrainCli.ContextCommand.class,
+        BrainCli.StatusCommand.class,
+        BrainCli.HandoffCommand.class
+    }
+)
+public class BrainCli implements CommandLineRunner {
+
+    @Option(names = {"-s", "--server"}, description = "Second Brain server URL", defaultValue = "http://localhost:8080")
+    private String serverUrl;
+
+    @Override
+    public void run(String... args) throws Exception {
+        if (args.length == 0) {
+            System.out.println("Second Brain CLI v1.0.0");
+            System.out.println("Use 'brain <command> --help' for available commands.");
+            System.out.println();
+            System.out.println("Available commands:");
+            System.out.println("  search     Search memories by keyword");
+            System.out.println("  ask        Ask a natural language question");
+            System.out.println("  remember   Store a new memory");
+            System.out.println("  projects   List all projects");
+            System.out.println("  tasks      List open tasks");
+            System.out.println("  decisions  List recent decisions");
+            System.out.println("  context    Assemble full context for a query");
+            System.out.println("  status     Check brain health status");
+            System.out.println("  handoff    Get latest agent handoff");
+        }
+    }
+
+    @Command(name = "search", description = "Search memories by keyword")
+    static class SearchCommand implements Runnable {
+        @Parameters(index = "0", description = "Search query")
+        private String query;
+
+        @Option(names = {"-l", "--limit"}, description = "Max results", defaultValue = "10")
+        private int limit;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/memory/search?q=" + java.net.URLEncoder.encode(query, "UTF-8")))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "ask", description = "Ask a natural language question")
+    static class AskCommand implements Runnable {
+        @Parameters(index = "0", description = "Question")
+        private String question;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/memory/search?q=" + java.net.URLEncoder.encode(question, "UTF-8")))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Question: " + question);
+                System.out.println("Results:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "remember", description = "Store a new memory")
+    static class RememberCommand implements Runnable {
+        @Parameters(index = "0", description = "Memory content")
+        private String content;
+
+        @Option(names = {"-t", "--type"}, description = "Memory type", defaultValue = "DECLARATIVE")
+        private String type;
+
+        @Option(names = {"--scope"}, description = "Scope (GLOBAL, PROJECT, REPOSITORY)", defaultValue = "GLOBAL")
+        private String scope;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var json = String.format(
+                    "{\"content\":\"%s\",\"type\":\"%s\",\"scope\":\"%s\"}",
+                    content.replace("\"", "\\\""), type, scope);
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/memory"))
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Memory stored: " + formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "projects", description = "List all projects")
+    static class ProjectsCommand implements Runnable {
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/projects"))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Projects:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "tasks", description = "List open tasks")
+    static class TasksCommand implements Runnable {
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/tasks/open"))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Open Tasks:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "decisions", description = "List recent decisions")
+    static class DecisionsCommand implements Runnable {
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/decisions/recent"))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Recent Decisions:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "context", description = "Assemble full context for a query")
+    static class ContextCommand implements Runnable {
+        @Parameters(index = "0", description = "Query to assemble context for")
+        private String query;
+
+        @Option(names = {"--project"}, description = "Project UUID to scope results")
+        private String projectId;
+
+        @Option(names = {"--repo"}, description = "Repository UUID to scope results")
+        private String repositoryId;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var searchUrl = serverUrl + "/api/v1/memory/search?q=" + java.net.URLEncoder.encode(query, "UTF-8");
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(searchUrl))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Context for: " + query);
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "status", description = "Check brain health status")
+    static class StatusCommand implements Runnable {
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/health/doctor"))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Brain Health:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    @Command(name = "handoff", description = "Get latest agent handoff for a repository")
+    static class HandoffCommand implements Runnable {
+        @Parameters(index = "0", description = "Repository UUID")
+        private String repositoryId;
+
+        @Option(names = {"-s", "--server"}, description = "Server URL", defaultValue = "http://localhost:8080")
+        private String serverUrl;
+
+        @Override
+        public void run() {
+            try {
+                var client = java.net.http.HttpClient.newHttpClient();
+                var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(serverUrl + "/api/v1/handoffs/repository/" + repositoryId + "/latest"))
+                    .GET()
+                    .build();
+                var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+                System.out.println("Latest Handoff:");
+                System.out.println(formatJson(response.body()));
+            } catch (Exception e) {
+                System.err.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    private static String formatJson(String json) {
+        if (json == null || json.isBlank()) return "(empty)";
+        try {
+            var objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var tree = objectMapper.readTree(json);
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(tree);
+        } catch (Exception e) {
+            return json;
+        }
+    }
+}

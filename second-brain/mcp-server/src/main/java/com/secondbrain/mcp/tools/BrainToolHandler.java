@@ -8,6 +8,8 @@ import com.secondbrain.common.enums.*;
 import com.secondbrain.common.repository.*;
 import com.secondbrain.service.ContextAssemblyService;
 import com.secondbrain.service.GraphService;
+import com.secondbrain.service.BrainDoctorService;
+import com.secondbrain.service.RetrievalQualityService;
 import io.modelcontextprotocol.spec.McpSchema.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +34,8 @@ public class BrainToolHandler {
     private final TaskRepository taskRepository;
     private final ContextAssemblyService contextAssemblyService;
     private final GraphService graphService;
+    private final BrainDoctorService brainDoctorService;
+    private final RetrievalQualityService retrievalQualityService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -351,6 +355,28 @@ public class BrainToolHandler {
             return new CallToolResult(List.of(new TextContent(sb.toString())), false);
         } catch (Exception e) {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleBrainDoctor() {
+        try {
+            BrainDoctorService.DoctorReport report = brainDoctorService.runDiagnostics();
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Brain doctor diagnostics failed", e);
+            return new CallToolResult(List.of(new TextContent("Error running diagnostics: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleEvaluateQuality() {
+        try {
+            RetrievalQualityService.QualityReport report = retrievalQualityService.evaluate(null);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Retrieval quality evaluation failed", e);
+            return new CallToolResult(List.of(new TextContent("Error evaluating quality: " + e.getMessage())), true);
         }
     }
 

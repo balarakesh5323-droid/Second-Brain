@@ -23,4 +23,10 @@ public class TestConfig {
 
     @MockBean
     private com.secondbrain.service.RepositoryIndexingService repositoryIndexingService;
+
+    @MockBean
+    private com.secondbrain.service.BrainDoctorService brainDoctorService;
+
+    @MockBean
+    private com.secondbrain.service.RetrievalQualityService retrievalQualityService;
 }
