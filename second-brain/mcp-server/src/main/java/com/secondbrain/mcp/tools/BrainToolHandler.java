@@ -477,6 +477,8 @@ public class BrainToolHandler {
             sb.append("=== Repository Ingested ===\n\n");
             sb.append("URL: ").append(url).append("\n");
             sb.append("Status: ").append(result.getOrDefault("status", "unknown")).append("\n");
+            sb.append("Project: ").append(result.getOrDefault("projectName", "N/A"))
+              .append(" (").append(result.getOrDefault("projectId", "N/A")).append(")\n");
             sb.append("Local Path: ").append(result.getOrDefault("localPath", "N/A")).append("\n");
             sb.append("Branch: ").append(result.getOrDefault("branch", "N/A")).append("\n");
             sb.append("Repository ID: ").append(result.getOrDefault("repositoryId", "N/A")).append("\n\n");

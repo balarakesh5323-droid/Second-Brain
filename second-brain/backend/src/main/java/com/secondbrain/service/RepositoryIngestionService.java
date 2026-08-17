@@ -1,5 +1,6 @@
 package com.secondbrain.service;
 
+import com.secondbrain.common.entity.Project;
 import com.secondbrain.common.entity.RepositoryEntity;
 import com.secondbrain.common.repository.ProjectRepository;
 import com.secondbrain.common.repository.RepositoryEntityRepository;
@@ -137,6 +138,25 @@ public class RepositoryIngestionService {
             // Step 7: Store repository entity in PostgreSQL
             result.put("step", "persisting");
             String primaryLang = bootstrap.getLanguages().isEmpty() ? "Unknown" : bootstrap.getLanguages().get(0);
+
+            // Create or find project
+            Project project = null;
+            if (projectId != null) {
+                project = projectRepository.findById(projectId).orElse(null);
+            }
+            if (project == null) {
+                project = Project.builder()
+                    .name(clone.repoName())
+                    .description(String.format("GitHub: %s/%s | %s",
+                        clone.owner(), clone.repoName(), clone.remoteUrl()))
+                    .path(clone.localPath())
+                    .build();
+                project = projectRepository.save(project);
+                log.info("Created project: {} ({})", project.getName(), project.getId());
+            }
+            result.put("projectId", project.getId().toString());
+            result.put("projectName", project.getName());
+
             RepositoryEntity repoEntity = RepositoryEntity.builder()
                 .name(clone.repoName())
                 .url(clone.remoteUrl())
@@ -147,11 +167,8 @@ public class RepositoryIngestionService {
                     clone.owner(), clone.repoName(),
                     String.join(", ", bootstrap.getLanguages()),
                     String.join(", ", bootstrap.getFrameworks())))
+                .project(project)
                 .build();
-
-            if (projectId != null) {
-                projectRepository.findById(projectId).ifPresent(repoEntity::setProject);
-            }
 
             repoEntity = repositoryRepository.save(repoEntity);
             result.put("repositoryId", repoEntity.getId().toString());
