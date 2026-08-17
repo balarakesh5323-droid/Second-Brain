@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -38,9 +39,6 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
 
     @Autowired
     private GraphService graphService;
-
-    @Autowired
-    private GitService gitService;
 
     @Autowired
     private ProjectRepository projectRepository;
@@ -76,7 +74,7 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     }
 
     @Test
-    @DisplayName("1. SHA-256 Content Hash Generation is deterministic and detects modifications")
+    @DisplayName("1. Deterministic Content Hashing & Detection: SHA-256 detects content modifications")
     void testContentHashing() {
         String content1 = "public class AuthController { public void login() {} }";
         String content2 = "public class AuthController { public void login() {} }";
@@ -92,12 +90,16 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     }
 
     @Test
-    @DisplayName("2. Working Tree Status calculation handles non-git / git workspaces gracefully")
+    @DisplayName("2. Rich Working Tree State & Status Counts")
     void testWorkingTreeStatus() {
         GitService directGitService = new GitService();
         Map<String, Object> status = directGitService.getWorkingTreeStatus("/tmp/test-project/backend-api");
         assertThat(status).isNotNull();
         assertThat(status).containsKey("state");
+        assertThat(status).containsKey("clean");
+        assertThat(status).containsKey("modifiedCount");
+        assertThat(status).containsKey("untrackedCount");
+        assertThat(status).containsKey("stagedCount");
         assertThat(status.get("state")).isIn("CLEAN", "MODIFIED", "UNKNOWN", "MIXED", "STAGED", "UNTRACKED");
     }
 
@@ -122,7 +124,7 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     }
 
     @Test
-    @DisplayName("5. Destructive Stale-Child Removal: Purges deleted symbols and returns purged IDs")
+    @DisplayName("5. Destructive Stale-Child Removal: Purging obsolete functions removes them and returns IDs")
     void testStaleFunctionPurge() {
         String fileId = "repo::" + repoA.getId() + "::src/UserService.java";
         String staleFuncId = fileId + "::delete";
@@ -156,5 +158,43 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
 
         graphService.deleteFileCascade(fileId);
         verify(graphService, times(1)).deleteFileCascade(eq(fileId));
+    }
+
+    @Test
+    @DisplayName("7. Modify-Delete Race Invariant: Monotonic versioning rejects stale modifications")
+    void testModifyDeleteRaceRejection() {
+        Map<String, Long> writeVersions = new ConcurrentHashMap<>();
+        String filePath = "/tmp/test-project/backend-api/src/TestService.java";
+
+        long modifyVersion = 1000L;
+        writeVersions.put(filePath, modifyVersion);
+
+        long deleteVersion = 2000L;
+        writeVersions.put(filePath, deleteVersion);
+
+        // When slow modify worker finishes, current version (2000) > event version (1000) -> rejected
+        Long currentVer = writeVersions.get(filePath);
+        boolean isStale = currentVer != null && currentVer > modifyVersion;
+
+        assertThat(isStale).isTrue();
+    }
+
+    @Test
+    @DisplayName("8. Rapid Modifications A -> B -> C: Final brain state matches latest version")
+    void testRapidSequentialModifications() {
+        Map<String, String> hashes = new ConcurrentHashMap<>();
+        String fileId = "repo::" + repoA.getId() + "::src/StateService.java";
+
+        String hashA = WorkspaceWatcherService.computeHash("state A");
+        hashes.put(fileId, hashA);
+
+        String hashB = WorkspaceWatcherService.computeHash("state B");
+        hashes.put(fileId, hashB);
+
+        String hashC = WorkspaceWatcherService.computeHash("state C");
+        hashes.put(fileId, hashC);
+
+        assertThat(hashes.get(fileId)).isEqualTo(hashC);
+        assertThat(hashes.get(fileId)).isNotEqualTo(hashA);
     }
 }

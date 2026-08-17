@@ -360,7 +360,7 @@ public class GraphService {
             return deleted;
         } catch (Exception e) {
             log.error("Failed purging stale children for {}: {}", fileId, e.getMessage());
-            return List.of();
+            throw new IllegalStateException("Failed purging stale children for " + fileId, e);
         }
     }
 

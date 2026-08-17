@@ -155,6 +155,7 @@ public class GitService {
         statusMap.put("modifiedCount", 0);
         statusMap.put("untrackedCount", 0);
         statusMap.put("addedCount", 0);
+        statusMap.put("stagedCount", 0);
         statusMap.put("removedCount", 0);
         statusMap.put("missingCount", 0);
 
@@ -205,6 +206,7 @@ public class GitService {
                     statusMap.put("modifiedCount", modified);
                     statusMap.put("untrackedCount", untracked);
                     statusMap.put("addedCount", added);
+                    statusMap.put("stagedCount", added);
                     statusMap.put("removedCount", removed);
                     statusMap.put("missingCount", missing);
                 }
