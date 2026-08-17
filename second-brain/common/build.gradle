@@ -11,6 +11,7 @@ dependencies {
     api 'org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r'
     api 'com.github.javaparser:javaparser-core:3.26.2'
     api 'io.modelcontextprotocol.sdk:mcp:0.10.0'
+    api 'io.minio:minio:8.5.11'
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 }

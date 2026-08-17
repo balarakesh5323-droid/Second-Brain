@@ -35,6 +35,11 @@ neo4j:
   username: neo4j
   password: password
 
+minio:
+  endpoint: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+
 management:
   endpoints:
     web:
