@@ -6,6 +6,7 @@ import AgentActivity from './pages/AgentActivity';
 import RepositoryExplorer from './pages/RepositoryExplorer';
 import SkillsView from './pages/SkillsView';
 import HandoffsView from './pages/HandoffsView';
+import Documentation from './pages/Documentation';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="repositories" element={<RepositoryExplorer />} />
           <Route path="skills" element={<SkillsView />} />
           <Route path="handoffs" element={<HandoffsView />} />
+          <Route path="docs" element={<Documentation />} />
         </Route>
       </Routes>
     </BrowserRouter>

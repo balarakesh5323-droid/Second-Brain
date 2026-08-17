@@ -1,5 +1,5 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Brain, Database, GitBranch, Users, Zap, ArrowRightLeft, Home } from 'lucide-react';
+import { Brain, Database, GitBranch, Users, Zap, ArrowRightLeft, Home, BookOpen } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
@@ -8,6 +8,7 @@ const navItems = [
   { path: '/repositories', label: 'Repositories', icon: GitBranch },
   { path: '/skills', label: 'Skills', icon: Zap },
   { path: '/handoffs', label: 'Handoffs', icon: ArrowRightLeft },
+  { path: '/docs', label: 'Docs', icon: BookOpen },
 ];
 
 export default function Layout() {
