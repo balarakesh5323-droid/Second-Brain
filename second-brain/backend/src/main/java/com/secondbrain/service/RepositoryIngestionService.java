@@ -102,11 +102,17 @@ public class RepositoryIngestionService {
             result.put("commitsEmbedded", embedded);
             log.info("Embedded {} commits", embedded);
 
-            // Step 5: Embed code structure summaries
+            // Step 5: Embed code structure summaries & fine-grained symbols
             result.put("step", "embedding_code");
             int codeEmbedded = 0;
+            int symbolsEmbedded = 0;
+
             for (Map<String, Object> structure : codeStructure) {
                 try {
+                    String file = (String) structure.getOrDefault("file", "unknown");
+                    String lang = (String) structure.getOrDefault("language", "unknown");
+
+                    // 5a. File-level summary
                     String summary = buildCodeSummary(structure);
                     if (summary != null && !summary.isBlank()) {
                         float[] embedding = embeddingService.embed(summary);
@@ -115,20 +121,50 @@ public class RepositoryIngestionService {
                                 "repository", clone.repoName(),
                                 "owner", clone.owner(),
                                 "type", "code_structure",
-                                "file", (String) structure.getOrDefault("file", "unknown"),
-                                "language", (String) structure.getOrDefault("language", "unknown"),
+                                "file", file,
+                                "language", lang,
                                 "summary", summary
                             ),
                             Map.of()
                         );
                         codeEmbedded++;
                     }
+
+                    // 5b. Symbol-level fine-grained embeddings for functions/methods
+                    List<Map<String, Object>> functions = (List<Map<String, Object>>) structure.getOrDefault("functions", List.of());
+                    for (Map<String, Object> func : functions) {
+                        try {
+                            String name = (String) func.getOrDefault("name", "");
+                            String returnType = (String) func.getOrDefault("returnType", "void");
+                            String params = String.valueOf(func.getOrDefault("parameters", ""));
+                            String docstring = (String) func.getOrDefault("docstring", "");
+                            String symbolText = String.format("Function: %s(%s) -> %s in %s %s",
+                                name, params, returnType, file, docstring.isBlank() ? "" : "| " + docstring);
+
+                            float[] symEmbedding = embeddingService.embed(symbolText);
+                            vectorStoreService.upsert("symbol_knowledge", UUID.randomUUID().toString(), symEmbedding,
+                                Map.of(
+                                    "repository", clone.repoName(),
+                                    "owner", clone.owner(),
+                                    "type", "function",
+                                    "name", name,
+                                    "returnType", returnType,
+                                    "parameters", params,
+                                    "file", file,
+                                    "docstring", docstring
+                                ),
+                                Map.of()
+                            );
+                            symbolsEmbedded++;
+                        } catch (Exception ignored) {}
+                    }
                 } catch (Exception e) {
                     log.debug("Failed to embed code structure: {}", e.getMessage());
                 }
             }
             result.put("codeFilesEmbedded", codeEmbedded);
-            log.info("Embedded {} code file summaries", codeEmbedded);
+            result.put("symbolsEmbedded", symbolsEmbedded);
+            log.info("Embedded {} code files and {} symbol definitions", codeEmbedded, symbolsEmbedded);
 
             // Step 6: Store Project and Repository in PostgreSQL
             result.put("step", "persisting");
@@ -177,7 +213,7 @@ public class RepositoryIngestionService {
             repoEntity = repositoryRepository.save(repoEntity);
             result.put("repositoryId", repoEntity.getId().toString());
 
-            // Step 7: Create knowledge graph nodes and project linkage
+            // Step 7: Create knowledge graph nodes, endpoints, and call graphs
             result.put("step", "building_graph");
             try {
                 int graphNodes = buildKnowledgeGraph(clone, bootstrap, codeStructure, project);
@@ -289,13 +325,18 @@ public class RepositoryIngestionService {
         graphService.batchCreateRelationshipsTyped("WRITTEN_IN", langRels);
         nodeCount += langNodes.size() * 2;
 
-        // Batch 4: Code structure - files, classes, functions
+        // Batch 4: Code structure - Files, Classes, Functions, Endpoints & Call Graphs
         List<Map<String, Object>> fileNodes = new ArrayList<>();
         List<Map<String, Object>> fileRels = new ArrayList<>();
         List<Map<String, Object>> classNodes = new ArrayList<>();
         List<Map<String, Object>> classRels = new ArrayList<>();
         List<Map<String, Object>> funcNodes = new ArrayList<>();
         List<Map<String, Object>> funcRels = new ArrayList<>();
+        List<Map<String, Object>> endpointNodes = new ArrayList<>();
+        List<Map<String, Object>> endpointRels = new ArrayList<>();
+        List<Map<String, Object>> callRels = new ArrayList<>();
+
+        Map<String, String> functionNameToId = new HashMap<>();
 
         for (Map<String, Object> file : codeStructure) {
             String filePath = (String) file.getOrDefault("file", "");
@@ -336,13 +377,62 @@ public class RepositoryIngestionService {
             for (Map<String, Object> func : functions) {
                 String funcName = (String) func.getOrDefault("name", "unknown");
                 String funcId = repoNodeId + "::" + shortPath + "::" + funcName;
-                funcNodes.add(Map.of("id", funcId, "props", Map.of(
-                    "name", funcName,
-                    "file", shortPath,
-                    "returnType", func.getOrDefault("returnType", "void"),
-                    "parameters", String.valueOf(func.getOrDefault("parameters", ""))
-                )));
+                functionNameToId.put(funcName, funcId);
+
+                Map<String, Object> funcProps = new HashMap<>();
+                funcProps.put("name", funcName);
+                funcProps.put("file", shortPath);
+                funcProps.put("returnType", func.getOrDefault("returnType", "void"));
+                funcProps.put("parameters", String.valueOf(func.getOrDefault("parameters", "")));
+                if (func.containsKey("docstring")) funcProps.put("docstring", func.get("docstring"));
+                if (func.containsKey("startLine")) funcProps.put("startLine", func.get("startLine"));
+                if (func.containsKey("endLine")) funcProps.put("endLine", func.get("endLine"));
+
+                funcNodes.add(Map.of("id", funcId, "props", funcProps));
                 funcRels.add(Map.of("fromId", fileId, "toId", funcId, "props", Map.of()));
+
+                // Collect downstream calls
+                if (func.containsKey("calls") && func.get("calls") instanceof List<?> calls) {
+                    for (Object c : calls) {
+                        String calledName = String.valueOf(c);
+                        if (!calledName.equals(funcName)) {
+                            callRels.add(Map.of("fromId", funcId, "calledName", calledName));
+                        }
+                    }
+                }
+            }
+
+            // Extract HTTP API Endpoints
+            List<Map<String, Object>> endpoints = (List<Map<String, Object>>) file.getOrDefault("endpoints", List.of());
+            for (Map<String, Object> ep : endpoints) {
+                String method = (String) ep.getOrDefault("method", "GET");
+                String path = (String) ep.getOrDefault("path", "/");
+                String endpointId = method + " " + path;
+                String handlerFunc = (String) ep.getOrDefault("handlerFunction", "");
+
+                endpointNodes.add(Map.of("id", endpointId, "props", Map.of(
+                    "method", method,
+                    "path", path,
+                    "file", shortPath,
+                    "handler", handlerFunc
+                )));
+                endpointRels.add(Map.of("fromId", fileId, "toId", endpointId, "props", Map.of()));
+
+                if (!handlerFunc.isEmpty()) {
+                    String handlerFuncId = repoNodeId + "::" + shortPath + "::" + handlerFunc;
+                    endpointRels.add(Map.of("fromId", endpointId, "toId", handlerFuncId, "props", Map.of()));
+                }
+            }
+        }
+
+        // Resolve function call relationships
+        List<Map<String, Object>> resolvedCallRels = new ArrayList<>();
+        for (Map<String, Object> cr : callRels) {
+            String fromId = (String) cr.get("fromId");
+            String calledName = (String) cr.get("calledName");
+            if (functionNameToId.containsKey(calledName)) {
+                String targetId = functionNameToId.get(calledName);
+                resolvedCallRels.add(Map.of("fromId", fromId, "toId", targetId, "props", Map.of()));
             }
         }
 
@@ -352,9 +442,18 @@ public class RepositoryIngestionService {
         graphService.batchCreateRelationshipsTyped("DEFINES", classRels);
         graphService.batchCreateNodes("Function", funcNodes);
         graphService.batchCreateRelationshipsTyped("DEFINES", funcRels);
-        nodeCount += (fileNodes.size() + classNodes.size() + funcNodes.size()) * 2;
+        if (!endpointNodes.isEmpty()) {
+            graphService.batchCreateNodes("Endpoint", endpointNodes);
+            graphService.batchCreateRelationshipsTyped("EXPOSES", endpointRels);
+        }
+        if (!resolvedCallRels.isEmpty()) {
+            graphService.batchCreateRelationshipsTyped("CALLS", resolvedCallRels);
+        }
 
-        log.info("Created {} graph nodes for {}/{}", nodeCount, clone.owner(), clone.repoName());
+        nodeCount += (fileNodes.size() + classNodes.size() + funcNodes.size() + endpointNodes.size()) * 2;
+
+        log.info("Created {} graph nodes (including {} endpoints, {} calls) for {}/{}",
+            nodeCount, endpointNodes.size(), resolvedCallRels.size(), clone.owner(), clone.repoName());
         return nodeCount;
     }
 

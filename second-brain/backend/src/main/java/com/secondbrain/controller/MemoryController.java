@@ -18,6 +18,19 @@ import java.util.UUID;
 public class MemoryController {
 
     private final MemoryService memoryService;
+    private final com.secondbrain.service.MemoryConsolidationService consolidationService;
+    private final com.secondbrain.service.SemanticSearchService semanticSearchService;
+
+    @PostMapping("/consolidate")
+    public ResponseEntity<java.util.Map<String, Object>> runConsolidation() {
+        return ResponseEntity.ok(consolidationService.runConsolidationCycle());
+    }
+
+    @PostMapping("/decay")
+    public ResponseEntity<java.util.Map<String, Object>> runDecay() {
+        int decayed = consolidationService.decayStaleMemories();
+        return ResponseEntity.ok(java.util.Map.of("status", "success", "memoriesDecayed", decayed));
+    }
 
     @PostMapping
     public ResponseEntity<Memory> create(@RequestBody MemoryDto dto) {
@@ -52,6 +65,13 @@ public class MemoryController {
     @GetMapping("/search")
     public ResponseEntity<List<Memory>> search(@RequestParam("q") String query) {
         return ResponseEntity.ok(memoryService.search(query));
+    }
+
+    @GetMapping("/symbols")
+    public ResponseEntity<List<com.secondbrain.common.dto.SearchResult>> searchSymbols(
+            @RequestParam("q") String query,
+            @RequestParam(defaultValue = "15") int limit) {
+        return ResponseEntity.ok(semanticSearchService.searchSymbols(query, limit));
     }
 
     @PutMapping("/{id}")

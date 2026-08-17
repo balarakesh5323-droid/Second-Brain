@@ -36,6 +36,10 @@ public class SemanticSearchService {
             .toList();
     }
 
+    public List<SearchResult> searchSymbols(String query, int limit) {
+        return search(query, "symbol_knowledge", limit);
+    }
+
     public List<SearchResult> searchAllCollections(String query, int limit) {
         List<SearchResult> allResults = new ArrayList<>();
         List<String> collections = List.of(
@@ -43,6 +47,7 @@ public class SemanticSearchService {
             "project_knowledge",
             "repository_knowledge",
             "code_knowledge",
+            "symbol_knowledge",
             "conversation_memory",
             "agent_memory",
             "technical_memory",

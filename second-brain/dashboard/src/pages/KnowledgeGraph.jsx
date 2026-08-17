@@ -23,6 +23,7 @@ import {
   Folder,
   ArrowRight,
   ArrowLeft,
+  Globe,
 } from 'lucide-react';
 
 const ReactForceGraph2D = lazy(() => import('react-force-graph-2d'));
@@ -34,6 +35,7 @@ const NODE_COLORS = {
   File: '#6b7280',
   Class: '#f59e0b',
   Function: '#10b981',
+  Endpoint: '#06b6d4',
   Module: '#ef4444',
   Project: '#ec4899',
   Memory: '#8b5cf6',
@@ -55,6 +57,8 @@ function getNodeIcon(label) {
       return FileCode;
     case 'Function':
       return Code2;
+    case 'Endpoint':
+      return Globe;
     case 'Class':
       return Layers;
     case 'Language':
@@ -289,6 +293,43 @@ function NodeDetailPanel({ node, allNodes, allEdges, onClose, onSelectNodeId, on
                     )}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {label === 'Endpoint' && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold">HTTP API Endpoint</span>
+                    <button
+                      onClick={() => handleCopyContent(`${properties.method || 'GET'} ${properties.path || '/'}`)}
+                      className="text-xs text-gray-400 hover:text-purple-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedContent ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedContent ? 'Copied' : 'Copy Route'}</span>
+                    </button>
+                  </div>
+                  <div className="bg-gray-950 border border-gray-800 rounded-lg p-3 font-mono text-xs flex items-center gap-2 overflow-x-auto">
+                    <span className="px-2 py-0.5 rounded font-bold bg-cyan-950 text-cyan-400 border border-cyan-800 text-[11px]">
+                      {properties.method || 'GET'}
+                    </span>
+                    <span className="text-gray-100 font-bold">{properties.path || '/'}</span>
+                  </div>
+                </div>
+
+                {properties.handler && (
+                  <div className="bg-gray-950 border border-gray-800/80 rounded-lg p-3 space-y-1 text-xs">
+                    <span className="text-gray-500 block">Handler Function</span>
+                    <span className="font-mono text-purple-400 font-semibold">{properties.handler}()</span>
+                  </div>
+                )}
+
+                {properties.file && (
+                  <div className="bg-gray-950 border border-gray-800/80 rounded-lg p-3 space-y-1 text-xs">
+                    <span className="text-gray-500 block">Declared In</span>
+                    <span className="font-mono text-gray-300 break-all">{properties.file}</span>
+                  </div>
+                )}
               </div>
             )}
 

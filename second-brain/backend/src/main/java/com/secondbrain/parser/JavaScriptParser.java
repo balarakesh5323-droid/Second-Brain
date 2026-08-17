@@ -61,6 +61,11 @@ public class JavaScriptParser extends BaseLanguageParser {
     @Override
     protected Pattern interfacePattern() { return INTERFACE; }
 
+    private static final Pattern EXPRESS_ENDPOINT = Pattern.compile(
+        "(?:app|router)\\.(?<method>get|post|put|delete|patch|use)\\(\\s*['\"](?<path>[^'\"]+)['\"]",
+        Pattern.MULTILINE
+    );
+
     @Override
     public Map<String, Object> parse(String filePath, String content) {
         Map<String, Object> parsed = super.parse(filePath, content);
@@ -81,7 +86,18 @@ public class JavaScriptParser extends BaseLanguageParser {
             functions.add(funcInfo);
         }
 
+        List<Map<String, Object>> endpoints = new ArrayList<>();
+        Matcher epMatcher = EXPRESS_ENDPOINT.matcher(content);
+        while (epMatcher.find()) {
+            Map<String, Object> ep = new HashMap<>();
+            ep.put("method", epMatcher.group("method").toUpperCase());
+            ep.put("path", epMatcher.group("path"));
+            ep.put("file", filePath);
+            endpoints.add(ep);
+        }
+
         parsed.put("functions", functions);
+        parsed.put("endpoints", endpoints);
         return parsed;
     }
 

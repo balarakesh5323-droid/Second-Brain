@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { brainApi } from '../api/client';
 import { 
   ArrowRightLeft, 
@@ -12,11 +12,28 @@ import {
   HelpCircle,
   Bot,
   Calendar,
-  Layers
+  Layers,
+  Plus,
+  X,
+  Loader2
 } from 'lucide-react';
 
 export default function HandoffsView() {
+  const queryClient = useQueryClient();
   const [selectedRepoId, setSelectedRepoId] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formData, setFormData] = useState({
+    agentName: 'Antigravity AI',
+    task: '',
+    completedItems: '',
+    inProgressItems: '',
+    blockedItems: '',
+    changedFiles: '',
+    nextSteps: '',
+    decisions: '',
+    knownIssues: ''
+  });
 
   const { data: repos, isLoading: reposLoading } = useQuery({
     queryKey: ['repositories'],
@@ -47,14 +64,171 @@ export default function HandoffsView() {
     return str.split('\n').map(s => s.trim()).filter(Boolean);
   };
 
+  const handleCreateHandoff = async (e) => {
+    e.preventDefault();
+    if (!formData.task.trim()) return;
+    setIsSubmitting(true);
+    try {
+      await brainApi.createHandoff({
+        task: formData.task,
+        completedItems: formData.completedItems,
+        inProgressItems: formData.inProgressItems,
+        blockedItems: formData.blockedItems,
+        changedFiles: formData.changedFiles,
+        nextSteps: formData.nextSteps,
+        decisions: formData.decisions,
+        knownIssues: formData.knownIssues,
+      });
+      setShowModal(false);
+      setFormData({
+        agentName: 'Antigravity AI',
+        task: '',
+        completedItems: '',
+        inProgressItems: '',
+        blockedItems: '',
+        changedFiles: '',
+        nextSteps: '',
+        decisions: '',
+        knownIssues: ''
+      });
+      queryClient.invalidateQueries({ queryKey: ['handoffs'] });
+      if (selectedRepoId) {
+        queryClient.invalidateQueries({ queryKey: ['latestHandoff', selectedRepoId] });
+      }
+    } catch (err) {
+      alert('Failed to create handoff: ' + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold">Agent Handoffs</h2>
-        <p className="text-gray-400 text-sm mt-1">
-          Inspect cross-agent continuity protocols and handoff artifacts between Claude Code, Codex, Cursor, and other AI agents.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Agent Handoffs &amp; Continuity Bridge</h2>
+          <p className="text-gray-400 text-xs mt-0.5">
+            Cross-agent memory transfers and state snapshots between Antigravity, Cursor, Claude Code, and Codex
+          </p>
+        </div>
+
+        <button
+          onClick={() => setShowModal(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold transition-all cursor-pointer shadow-lg shadow-purple-900/30"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Record Agent Handoff</span>
+        </button>
       </div>
+
+      {/* Create Modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ArrowRightLeft className="w-5 h-5 text-purple-400" />
+                <h3 className="font-bold text-gray-100">Record New Agent Handoff</h3>
+              </div>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-gray-400 hover:text-gray-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateHandoff} className="p-5 overflow-y-auto space-y-4 text-xs">
+              <div>
+                <label className="block text-gray-400 font-medium mb-1">Task Summary *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Implement Graph-RAG & AST Call-Chain Extraction"
+                  value={formData.task}
+                  onChange={(e) => setFormData({ ...formData, task: e.target.value })}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-green-400 font-medium mb-1">Completed Items (one per line)</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Enhanced AST parsers&#10;Added Endpoint nodes in Neo4j"
+                    value={formData.completedItems}
+                    onChange={(e) => setFormData({ ...formData, completedItems: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-blue-400 font-medium mb-1">In Progress (one per line)</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Compounding memory confidence scores"
+                    value={formData.inProgressItems}
+                    onChange={(e) => setFormData({ ...formData, inProgressItems: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-amber-400 font-medium mb-1">Blocked Items (one per line)</label>
+                  <textarea
+                    rows={2}
+                    placeholder="None"
+                    value={formData.blockedItems}
+                    onChange={(e) => setFormData({ ...formData, blockedItems: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-purple-400 font-medium mb-1">Next Steps (one per line)</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Rebuild and test Docker cluster"
+                    value={formData.nextSteps}
+                    onChange={(e) => setFormData({ ...formData, nextSteps: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-cyan-400 font-medium mb-1">Changed Files (one per line)</label>
+                <textarea
+                  rows={2}
+                  placeholder="second-brain/backend/src/main/java/.../RepositoryIngestionService.java"
+                  value={formData.changedFiles}
+                  onChange={(e) => setFormData({ ...formData, changedFiles: e.target.value })}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg p-2.5 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-gray-800 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  <span>Save Handoff Snapshot</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Repository / Handoff Selector */}

@@ -37,6 +37,7 @@ public class VectorStoreService {
         "project_knowledge",
         "repository_knowledge",
         "code_knowledge",
+        "symbol_knowledge",
         "conversation_memory",
         "agent_memory",
         "technical_memory",

@@ -21,8 +21,11 @@ const safeArray = async (promise) => {
 export const brainApi = {
   // Memory
   searchMemory: (query) => api.get(`/memory/search?q=${encodeURIComponent(query)}`).then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
+  searchSymbols: (query) => api.get(`/memory/symbols?q=${encodeURIComponent(query)}`).then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
   getMemories: () => safeArray(api.get('/memory')),
   createMemory: (data) => api.post('/memory', data),
+  consolidateMemories: () => api.post('/memory/consolidate').then(r => r.data || {}),
+  decayMemories: () => api.post('/memory/decay').then(r => r.data || {}),
   
   // Projects
   getProjects: () => safeArray(api.get('/projects')),
