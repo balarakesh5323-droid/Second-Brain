@@ -1,0 +1,6 @@
+rootProject.name = 'second-brain'
+
+include 'backend'
+include 'common'
+include 'mcp-server'
+include 'workers'
