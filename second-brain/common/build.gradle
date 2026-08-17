@@ -10,6 +10,7 @@ dependencies {
     api 'io.qdrant:client:1.19.0'
     api 'org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r'
     api 'com.github.javaparser:javaparser-core:3.26.2'
+    api 'io.modelcontextprotocol.sdk:mcp:0.10.0'
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 }
