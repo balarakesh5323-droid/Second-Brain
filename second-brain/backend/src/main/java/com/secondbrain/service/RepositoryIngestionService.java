@@ -196,6 +196,24 @@ public class RepositoryIngestionService {
         }
     }
 
+    @Transactional
+    public Map<String, Object> syncRepository(UUID repositoryId) {
+        Optional<RepositoryEntity> repoOpt = repositoryRepository.findById(repositoryId);
+        if (repoOpt.isEmpty()) {
+            return Map.of("status", "failed", "error", "Repository not found: " + repositoryId);
+        }
+        RepositoryEntity repo = repoOpt.get();
+        UUID projectId = repo.getProject() != null ? repo.getProject().getId() : null;
+        return ingestFromUrl(repo.getUrl(), projectId);
+    }
+
+    @Transactional
+    public Map<String, Object> syncRepositoryByUrl(String url) {
+        Optional<RepositoryEntity> repoOpt = repositoryRepository.findByUrl(url);
+        UUID projectId = repoOpt.map(r -> r.getProject() != null ? r.getProject().getId() : null).orElse(null);
+        return ingestFromUrl(url, projectId);
+    }
+
     private int buildKnowledgeGraph(GitHubCloneService.CloneResult clone,
             RepositoryBootstrapService.BootstrapResult bootstrap,
             List<Map<String, Object>> codeStructure) {

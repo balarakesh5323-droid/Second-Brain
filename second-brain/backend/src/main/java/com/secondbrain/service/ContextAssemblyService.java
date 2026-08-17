@@ -66,16 +66,46 @@ public class ContextAssemblyService {
             log.warn("Semantic search failed: {}", e.getMessage());
         }
 
-        // Step 4: Query Neo4j relationships
-        List<Map<String, Object>> graphResults = Collections.emptyList();
+        // Step 4: Graph-RAG Fusion (Bridge Qdrant vector matches with Neo4j subgraph neighborhood)
+        List<Map<String, Object>> graphResults = new ArrayList<>();
         try {
-            if (resolvedProjectId != null) {
-                graphResults = graphService.findRelated("Project", resolvedProjectId, null, 2);
-            } else if (intent.topics != null && !intent.topics.isEmpty()) {
-                graphResults = graphService.searchByProperty("Technology", "name", intent.topics.get(0), 10);
+            List<String> vectorAnchorIds = new ArrayList<>();
+            for (SearchResult sr : semanticResults) {
+                if (sr.getId() != null && !sr.getId().isBlank()) {
+                    vectorAnchorIds.add(sr.getId());
+                }
+                if (sr.getPayload() != null) {
+                    if (sr.getPayload().containsKey("repository")) {
+                        vectorAnchorIds.add(String.valueOf(sr.getPayload().get("repository")));
+                    }
+                    if (sr.getPayload().containsKey("technology")) {
+                        vectorAnchorIds.add(String.valueOf(sr.getPayload().get("technology")));
+                    }
+                    if (sr.getPayload().containsKey("file")) {
+                        vectorAnchorIds.add(String.valueOf(sr.getPayload().get("file")));
+                    }
+                }
+            }
+
+            if (resolvedProjectId != null) vectorAnchorIds.add(resolvedProjectId);
+            if (resolvedRepoId != null) vectorAnchorIds.add(resolvedRepoId);
+            if (intent.topics != null) vectorAnchorIds.addAll(intent.topics);
+
+            if (!vectorAnchorIds.isEmpty()) {
+                List<String> distinctAnchors = vectorAnchorIds.stream().distinct().limit(10).toList();
+                List<Map<String, Object>> neighborhoods = graphService.findNeighborhoods(distinctAnchors, 2, 25);
+                graphResults.addAll(neighborhoods);
+            }
+
+            if (graphResults.isEmpty()) {
+                if (resolvedProjectId != null) {
+                    graphResults = graphService.findRelated("Project", resolvedProjectId, null, 2);
+                } else if (intent.topics != null && !intent.topics.isEmpty()) {
+                    graphResults = graphService.searchByProperty("Technology", "name", intent.topics.get(0), 10);
+                }
             }
         } catch (Exception e) {
-            log.warn("Graph query failed: {}", e.getMessage());
+            log.warn("Graph-RAG fusion query failed: {}", e.getMessage());
         }
 
         // Step 5: Query recent PostgreSQL events
@@ -300,13 +330,40 @@ public class ContextAssemblyService {
                 .build())
             .collect(Collectors.toList());
 
-        // Map graph results to architecture items
+        // Map graph results to architecture items with Graph-RAG relational enrichment
         List<ContextResponse.ContextItem> architecture = graphResults.stream()
-            .map(node -> ContextResponse.ContextItem.builder()
-                .id(String.valueOf(node.getOrDefault("id", "")))
-                .type(node.containsKey("labels") ? String.join(",", (List<String>) node.get("labels")) : "Node")
-                .content(node.toString())
-                .build())
+            .map(node -> {
+                String id = String.valueOf(node.getOrDefault("id", node.getOrDefault("name", node.getOrDefault("targetId", ""))));
+                String labelStr = "Node";
+                if (node.containsKey("labels") && node.get("labels") instanceof List<?> list && !list.isEmpty()) {
+                    labelStr = list.stream().map(Object::toString).collect(Collectors.joining(","));
+                } else if (node.containsKey("label")) {
+                    labelStr = String.valueOf(node.get("label"));
+                }
+
+                String relStr = "";
+                if (node.containsKey("relTypes") && node.get("relTypes") instanceof List<?> rels && !rels.isEmpty()) {
+                    relStr = " [via: " + rels.stream().map(Object::toString).collect(Collectors.joining(" -> ")) + "]";
+                }
+
+                String content = (node.containsKey("name") ? "Name: " + node.get("name") + " | " : "") +
+                    (node.containsKey("path") ? "Path: " + node.get("path") + " | " : "") +
+                    (node.containsKey("languages") ? "Languages: " + node.get("languages") + " | " : "") +
+                    (node.containsKey("frameworks") ? "Frameworks: " + node.get("frameworks") + " | " : "") +
+                    node.toString() + relStr;
+
+                Double depthScore = node.containsKey("depth") && node.get("depth") instanceof Number num
+                    ? Math.max(0.1, 1.0 - (num.doubleValue() * 0.25))
+                    : 0.8;
+
+                return ContextResponse.ContextItem.builder()
+                    .id(id)
+                    .type(labelStr)
+                    .content(content)
+                    .score(depthScore)
+                    .source("graph_rag_neighborhood")
+                    .build();
+            })
             .collect(Collectors.toList());
 
         // Map events to recent changes
@@ -358,6 +415,7 @@ public class ContextAssemblyService {
         List<String> sources = new ArrayList<>();
         sources.add("semantic_search");
         sources.add("knowledge_graph");
+        sources.add("graph_rag_fusion");
         sources.add("recent_events");
         sources.add("decisions");
         sources.add("open_tasks");

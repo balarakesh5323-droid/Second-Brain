@@ -136,4 +136,14 @@ public class GitService {
         }
         return files;
     }
+
+    public void pullLatest(String repoPath) {
+        try (Repository repository = openRepository(repoPath);
+             Git git = new Git(repository)) {
+            git.pull().call();
+            log.info("Pulled latest changes for repository at {}", repoPath);
+        } catch (Exception e) {
+            log.warn("Git pull failed for {}: {}", repoPath, e.getMessage());
+        }
+    }
 }

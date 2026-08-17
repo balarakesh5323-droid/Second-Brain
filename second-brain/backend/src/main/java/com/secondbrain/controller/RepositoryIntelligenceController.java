@@ -99,4 +99,69 @@ public class RepositoryIntelligenceController {
         Map<String, Object> result = ingestionService.ingestFromUrl(url, projectId);
         return ResponseEntity.ok(result);
     }
+
+    @PostMapping("/sync/{repositoryId}")
+    public ResponseEntity<Map<String, Object>> syncRepository(@PathVariable UUID repositoryId) {
+        log.info("Triggering git sync for repository ID: {}", repositoryId);
+        Map<String, Object> result = ingestionService.syncRepository(repositoryId);
+        return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/webhook/github")
+    public ResponseEntity<Map<String, Object>> handleGitHubWebhook(
+            @RequestBody Map<String, Object> payload,
+            @RequestHeader(value = "X-GitHub-Event", defaultValue = "push") String event) {
+        log.info("Received GitHub webhook event: {}", event);
+
+        if (!"push".equalsIgnoreCase(event)) {
+            return ResponseEntity.ok(Map.of("status", "ignored", "message", "Only 'push' events are ingested"));
+        }
+
+        try {
+            Map<String, Object> repoData = (Map<String, Object>) payload.get("repository");
+            if (repoData == null) {
+                return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "No repository payload found"));
+            }
+
+            String htmlUrl = (String) repoData.get("html_url");
+            String cloneUrl = (String) repoData.get("clone_url");
+            String targetUrl = htmlUrl != null ? htmlUrl : cloneUrl;
+
+            if (targetUrl == null) {
+                return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "No repository URL found in webhook"));
+            }
+
+            log.info("Auto-ingesting git push event for: {}", targetUrl);
+            Map<String, Object> syncResult = ingestionService.syncRepositoryByUrl(targetUrl);
+            return ResponseEntity.ok(Map.of(
+                "status", "synced",
+                "repository", targetUrl,
+                "syncResult", syncResult
+            ));
+        } catch (Exception e) {
+            log.error("GitHub webhook ingestion failed", e);
+            return ResponseEntity.internalServerError().body(Map.of("status", "error", "message", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/git-hook-script")
+    public ResponseEntity<Map<String, String>> getGitHookScript(
+            @RequestParam(defaultValue = "http://localhost:8080") String serverUrl) {
+        String script = "#!/bin/sh\n" +
+            "# Second Brain Auto-Ingestion Post-Commit Hook\n" +
+            "# Place this file in .git/hooks/post-commit and run: chmod +x .git/hooks/post-commit\n\n" +
+            "REPO_URL=$(git config --get remote.origin.url 2>/dev/null || echo \"\")\n" +
+            "if [ -n \"$REPO_URL\" ]; then\n" +
+            "  echo \"[Second Brain] Syncing commit to Second Brain...\"\n" +
+            "  curl -s -X POST \"" + serverUrl + "/api/v1/repository-intel/add-url\" \\\n" +
+            "    -H \"Content-Type: application/json\" \\\n" +
+            "    -d \"{\\\"url\\\": \\\"$REPO_URL\\\"}\" > /dev/null 2>&1 &\n" +
+            "fi\n";
+
+        return ResponseEntity.ok(Map.of(
+            "filename", "post-commit",
+            "instructions", "Save as .git/hooks/post-commit in your repository and make it executable (chmod +x .git/hooks/post-commit)",
+            "script", script
+        ));
+    }
 }

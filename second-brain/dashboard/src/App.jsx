@@ -8,6 +8,7 @@ import SkillsView from './pages/SkillsView';
 import HandoffsView from './pages/HandoffsView';
 import KnowledgeGraph from './pages/KnowledgeGraph';
 import Documentation from './pages/Documentation';
+import BrainChat from './pages/BrainChat';
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Home />} />
+          <Route path="chat" element={<BrainChat />} />
           <Route path="memory" element={<MemoryExplorer />} />
           <Route path="agents" element={<AgentActivity />} />
           <Route path="repositories" element={<RepositoryExplorer />} />

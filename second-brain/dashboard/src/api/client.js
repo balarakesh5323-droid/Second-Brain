@@ -58,6 +58,14 @@ export const brainApi = {
   getHandoffs: () => safeArray(api.get('/handoffs')),
   getLatestHandoff: (repoId) => api.get(`/handoffs/repository/${repoId}/latest`).then(r => r.data || null).catch(() => null),
   
+  // Context & NL Query
+  askBrain: (query, projectId, repositoryId) => api.post('/context/ask', { query, projectId, repositoryId }).then(r => r.data || {}).catch(err => ({ error: err.message })),
+  assembleContext: (query, projectId, repositoryId) => api.post('/context/assemble', { query, projectId, repositoryId }).then(r => r.data || {}).catch(() => ({})),
+  
+  // Repository Sync & Git Hooks
+  syncRepository: (repoId) => api.post(`/repository-intel/sync/${repoId}`).then(r => r.data || {}),
+  getGitHookScript: (serverUrl) => api.get('/repository-intel/git-hook-script', { params: { serverUrl } }).then(r => r.data || {}),
+
   // Health
   getHealth: () => api.get('/actuator/health').then(r => r.data || {}).catch(() => ({ status: 'UNKNOWN' })),
 };

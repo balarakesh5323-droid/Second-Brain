@@ -10,9 +10,7 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -180,6 +178,51 @@ public class GraphService {
             }
             return nodes;
         }
+    }
+
+    public List<Map<String, Object>> findNeighborhood(String nodeId, int depth, int limit) {
+        try (var session = driver.session()) {
+            String cypher = String.format(
+                "MATCH (n {id: $id})-[r*1..%d]-(m) " +
+                "RETURN DISTINCT m, [rel IN r | type(rel)] as relTypes, labels(m) as labels, length(r) as depth " +
+                "ORDER BY depth LIMIT $limit",
+                depth
+            );
+            var result = session.run(cypher, Map.of("id", nodeId, "limit", limit));
+            List<Map<String, Object>> neighbors = new ArrayList<>();
+            while (result.hasNext()) {
+                var record = result.next();
+                Map<String, Object> node = new HashMap<>(record.get("m").asMap());
+                node.put("relTypes", record.get("relTypes").asList().stream().map(Object::toString).toList());
+                node.put("labels", record.get("labels").asList().stream().map(Object::toString).toList());
+                node.put("depth", record.get("depth").asInt());
+                node.put("rootId", nodeId);
+                neighbors.add(node);
+            }
+            return neighbors;
+        } catch (Exception e) {
+            log.warn("Failed to find neighborhood for node {}: {}", nodeId, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    public List<Map<String, Object>> findNeighborhoods(List<String> nodeIds, int depth, int limit) {
+        if (nodeIds == null || nodeIds.isEmpty()) return Collections.emptyList();
+        List<Map<String, Object>> allNeighbors = new ArrayList<>();
+        Set<String> seenIds = new HashSet<>(nodeIds);
+
+        for (String id : nodeIds) {
+            List<Map<String, Object>> neighbors = findNeighborhood(id, depth, Math.max(5, limit / Math.max(1, nodeIds.size())));
+            for (Map<String, Object> neighbor : neighbors) {
+                String neighborId = (String) neighbor.getOrDefault("id", neighbor.getOrDefault("name", ""));
+                if (!neighborId.isEmpty() && seenIds.add(neighborId)) {
+                    allNeighbors.add(neighbor);
+                    if (allNeighbors.size() >= limit) break;
+                }
+            }
+            if (allNeighbors.size() >= limit) break;
+        }
+        return allNeighbors;
     }
 
     public Map<String, Object> getStats() {
