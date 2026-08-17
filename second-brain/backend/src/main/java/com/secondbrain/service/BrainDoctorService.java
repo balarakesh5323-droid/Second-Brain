@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
 import java.time.Duration;
 import java.util.*;
 
@@ -20,6 +22,7 @@ public class BrainDoctorService {
     private final Neo4jConfig neo4jConfig;
     private final RedisTemplate<String, Object> redisTemplate;
     private final MinioConfig minioConfig;
+    private final DataSource dataSource;
 
     public DoctorReport runDiagnostics() {
         log.info("Running brain doctor diagnostics...");
@@ -55,12 +58,15 @@ public class BrainDoctorService {
     }
 
     private DiagnosticResult checkPostgres() {
-        try {
+        try (Connection conn = dataSource.getConnection()) {
+            String url = conn.getMetaData().getURL();
             return DiagnosticResult.builder()
                 .service("PostgreSQL")
                 .status(Status.HEALTHY)
-                .message("H2 in-memory database active (production uses PostgreSQL)")
-                .details(Map.of("driver", "H2", "mode", "in-memory"))
+                .message("Connection successful")
+                .details(Map.of(
+                    "url", url,
+                    "catalog", conn.getCatalog() != null ? conn.getCatalog() : "N/A"))
                 .build();
         } catch (Exception e) {
             return DiagnosticResult.builder()
