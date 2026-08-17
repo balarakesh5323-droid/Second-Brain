@@ -45,6 +45,10 @@ ollama:
   embedding-model: all-minilm
   embedding-dimensions: 384
 
+github:
+  clone-base-dir: /data/repos
+  token: ${GITHUB_TOKEN:}
+
 management:
   endpoints:
     web:

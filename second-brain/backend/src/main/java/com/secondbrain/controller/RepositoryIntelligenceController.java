@@ -1,7 +1,9 @@
 package com.secondbrain.controller;
 
 import com.secondbrain.service.GitService;
+import com.secondbrain.service.GitHubCloneService;
 import com.secondbrain.service.RepositoryIndexingService;
+import com.secondbrain.service.RepositoryIngestionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -19,6 +21,8 @@ public class RepositoryIntelligenceController {
 
     private final GitService gitService;
     private final RepositoryIndexingService indexingService;
+    private final RepositoryIngestionService ingestionService;
+    private final GitHubCloneService gitHubCloneService;
 
     @GetMapping("/commits")
     public ResponseEntity<List<Map<String, Object>>> getCommits(
@@ -57,5 +61,42 @@ public class RepositoryIntelligenceController {
     @GetMapping("/structure")
     public ResponseEntity<List<Map<String, Object>>> analyzeStructure(@RequestParam String path) {
         return ResponseEntity.ok(indexingService.analyzeCodeStructure(path));
+    }
+
+    @PostMapping("/add-url")
+    public ResponseEntity<Map<String, Object>> addRepositoryByUrl(
+            @RequestBody Map<String, String> request) {
+        String url = request.get("url");
+        String projectIdStr = request.get("projectId");
+
+        if (url == null || url.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "URL is required",
+                "status", "failed"
+            ));
+        }
+
+        if (!gitHubCloneService.isGitHubUrl(url)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "Not a valid GitHub URL: " + url,
+                "status", "failed"
+            ));
+        }
+
+        UUID projectId = null;
+        if (projectIdStr != null && !projectIdStr.isBlank()) {
+            try {
+                projectId = UUID.fromString(projectIdStr);
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Invalid projectId UUID",
+                    "status", "failed"
+                ));
+            }
+        }
+
+        log.info("Adding repository from URL: {} (project: {})", url, projectId);
+        Map<String, Object> result = ingestionService.ingestFromUrl(url, projectId);
+        return ResponseEntity.ok(result);
     }
 }

@@ -10,6 +10,8 @@ import com.secondbrain.service.ContextAssemblyService;
 import com.secondbrain.service.GraphService;
 import com.secondbrain.service.BrainDoctorService;
 import com.secondbrain.service.RetrievalQualityService;
+import com.secondbrain.service.RepositoryIngestionService;
+import com.secondbrain.service.GitHubCloneService;
 import io.modelcontextprotocol.spec.McpSchema.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +38,8 @@ public class BrainToolHandler {
     private final GraphService graphService;
     private final BrainDoctorService brainDoctorService;
     private final RetrievalQualityService retrievalQualityService;
+    private final RepositoryIngestionService ingestionService;
+    private final GitHubCloneService gitHubCloneService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -448,6 +452,123 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Knowledge graph query failed", e);
             return new CallToolResult(List.of(new TextContent("Error querying knowledge graph: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleAddRepository(String url, String projectId) {
+        try {
+            if (url == null || url.isBlank()) {
+                return new CallToolResult(List.of(new TextContent("Error: URL is required")), true);
+            }
+
+            if (!gitHubCloneService.isGitHubUrl(url)) {
+                return new CallToolResult(List.of(new TextContent(
+                    "Error: Not a valid GitHub URL: " + url)), true);
+            }
+
+            java.util.UUID projectUuid = null;
+            if (projectId != null && !projectId.isBlank()) {
+                projectUuid = java.util.UUID.fromString(projectId);
+            }
+
+            Map<String, Object> result = ingestionService.ingestFromUrl(url, projectUuid);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== Repository Ingested ===\n\n");
+            sb.append("URL: ").append(url).append("\n");
+            sb.append("Status: ").append(result.getOrDefault("status", "unknown")).append("\n");
+            sb.append("Local Path: ").append(result.getOrDefault("localPath", "N/A")).append("\n");
+            sb.append("Branch: ").append(result.getOrDefault("branch", "N/A")).append("\n");
+            sb.append("Repository ID: ").append(result.getOrDefault("repositoryId", "N/A")).append("\n\n");
+
+            sb.append("Languages: ").append(result.getOrDefault("languages", List.of())).append("\n");
+            sb.append("Frameworks: ").append(result.getOrDefault("frameworks", List.of())).append("\n");
+            sb.append("Databases: ").append(result.getOrDefault("databases", List.of())).append("\n\n");
+
+            sb.append("Code files parsed: ").append(result.getOrDefault("codeStructureCount", 0)).append("\n");
+            sb.append("Commits embedded: ").append(result.getOrDefault("commitsEmbedded", 0)).append("\n");
+            sb.append("Code files embedded: ").append(result.getOrDefault("codeFilesEmbedded", 0)).append("\n");
+            sb.append("Graph nodes created: ").append(result.getOrDefault("graphNodesCreated", 0)).append("\n\n");
+
+            Object elapsed = result.get("elapsedMs");
+            if (elapsed != null) {
+                sb.append("Completed in ").append(elapsed).append("ms\n");
+            }
+
+            if (result.containsKey("error")) {
+                sb.append("\nError: ").append(result.get("error")).append("\n");
+            }
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to add repository", e);
+            return new CallToolResult(List.of(new TextContent("Error adding repository: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleRepositoryContext(String repositoryId, String query) {
+        try {
+            StringBuilder sb = new StringBuilder();
+
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                var repo = repositoryRepository.findById(java.util.UUID.fromString(repositoryId));
+                if (repo.isEmpty()) {
+                    return new CallToolResult(List.of(new TextContent(
+                        "Repository not found: " + repositoryId)), false);
+                }
+                var r = repo.get();
+                sb.append("=== Repository Context ===\n\n");
+                sb.append("Name: ").append(r.getName()).append("\n");
+                sb.append("URL: ").append(r.getUrl()).append("\n");
+                sb.append("Path: ").append(r.getPath()).append("\n");
+                sb.append("Branch: ").append(r.getDefaultBranch()).append("\n");
+                sb.append("Language: ").append(r.getPrimaryLanguage()).append("\n");
+                sb.append("Description: ").append(r.getDescription()).append("\n\n");
+
+                // Query knowledge graph for this repo
+                String graphId = r.getUrl();
+                if (graphId != null && graphId.contains("github.com")) {
+                    graphId = graphId.replace("https://github.com/", "").replace(".git", "");
+                }
+                List<Map<String, Object>> related = graphService.findRelated("Repository", graphId, null, 2);
+                if (!related.isEmpty()) {
+                    sb.append("Knowledge Graph Connections:\n");
+                    for (Map<String, Object> node : related) {
+                        sb.append("- ").append(node.getOrDefault("id", "unknown")).append("\n");
+                    }
+                    sb.append("\n");
+                }
+
+                // If query provided, search for relevant memories about this repo
+                if (query != null && !query.isBlank()) {
+                    List<Memory> memories = memoryRepository.findByContentContainingIgnoreCase(query);
+                    if (!memories.isEmpty()) {
+                        sb.append("Relevant Memories:\n");
+                        for (Memory m : memories) {
+                            sb.append("- [").append(m.getType()).append("] ").append(m.getContent()).append("\n");
+                        }
+                        sb.append("\n");
+                    }
+                }
+            } else {
+                // List all repositories
+                List<RepositoryEntity> repos = repositoryRepository.findAll();
+                sb.append("=== All Indexed Repositories ===\n\n");
+                for (RepositoryEntity r : repos) {
+                    sb.append("- ").append(r.getName()).append(" (").append(r.getId()).append(")\n");
+                    sb.append("  URL: ").append(r.getUrl()).append("\n");
+                    sb.append("  Language: ").append(r.getPrimaryLanguage()).append("\n");
+                    sb.append("  Path: ").append(r.getPath()).append("\n\n");
+                }
+                if (repos.isEmpty()) {
+                    sb.append("No repositories indexed yet. Use brain_add_repository to add one.\n");
+                }
+            }
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to get repository context", e);
+            return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }
     }
 }

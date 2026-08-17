@@ -276,7 +276,34 @@ public class SecondBrainMcpServer {
             buildTool("brain_evaluate_quality",
                 "Evaluate retrieval quality against a test dataset of developer questions (precision, recall, F1)",
                 "object", Map.of(), List.of(),
-                (exchange, args) -> toolHandler.handleEvaluateQuality())
+                (exchange, args) -> toolHandler.handleEvaluateQuality()),
+
+            buildTool("brain_add_repository",
+                "Add a GitHub repository to the Second Brain. Clones the repo, analyzes code structure, " +
+                "indexes commits, embeds code summaries, builds knowledge graph, and stores everything. " +
+                "Agents can then query this repository's full context.",
+                "object", Map.of(
+                    "url", Map.of("type", "string", "description", "GitHub repository URL (e.g. https://github.com/owner/repo)"),
+                    "project_id", Map.of("type", "string", "description", "Optional project UUID to associate with")
+                ), List.of("url"),
+                (exchange, args) -> {
+                    String url = (String) args.get("url");
+                    String projectId = (String) args.get("project_id");
+                    return toolHandler.handleAddRepository(url, projectId);
+                }),
+
+            buildTool("brain_repository_context",
+                "Get detailed context about an indexed repository — its metadata, knowledge graph connections, " +
+                "relevant memories, and code structure. Use repository_id for a specific repo, or omit to list all indexed repos.",
+                "object", Map.of(
+                    "repository_id", Map.of("type", "string", "description", "Repository UUID (omit to list all)"),
+                    "query", Map.of("type", "string", "description", "Optional search query to find relevant memories about this repo")
+                ), List.of(),
+                (exchange, args) -> {
+                    String repositoryId = (String) args.get("repository_id");
+                    String query = (String) args.get("query");
+                    return toolHandler.handleRepositoryContext(repositoryId, query);
+                })
         );
     }
 
