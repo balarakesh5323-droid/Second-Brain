@@ -149,8 +149,9 @@ public class GitService {
 
     public Map<String, Object> getWorkingTreeStatus(String repoPath) {
         Map<String, Object> statusMap = new HashMap<>();
+        statusMap.put("gitAvailable", false);
         statusMap.put("clean", true);
-        statusMap.put("state", "CLEAN");
+        statusMap.put("state", "UNKNOWN");
         statusMap.put("modifiedCount", 0);
         statusMap.put("untrackedCount", 0);
         statusMap.put("addedCount", 0);
@@ -178,14 +179,26 @@ public class GitService {
             try (repository; Git git = new Git(repository)) {
                 org.eclipse.jgit.api.Status status = git.status().call();
                 if (status != null) {
-                    int modified = status.getModified().size();
+                    statusMap.put("gitAvailable", true);
+                    int modified = status.getModified().size() + status.getChanged().size();
                     int untracked = status.getUntracked().size();
                     int added = status.getAdded().size();
                     int removed = status.getRemoved().size();
                     int missing = status.getMissing().size();
 
                     boolean isClean = status.isClean();
-                    String state = isClean ? "CLEAN" : "MODIFIED";
+                    String state = "CLEAN";
+                    if (!isClean) {
+                        if (added > 0 && (modified > 0 || untracked > 0)) {
+                            state = "MIXED";
+                        } else if (added > 0) {
+                            state = "STAGED";
+                        } else if (modified > 0 || missing > 0) {
+                            state = "MODIFIED";
+                        } else if (untracked > 0) {
+                            state = "UNTRACKED";
+                        }
+                    }
 
                     statusMap.put("clean", isClean);
                     statusMap.put("state", state);
@@ -197,6 +210,8 @@ public class GitService {
                 }
             }
         } catch (Throwable t) {
+            statusMap.put("gitAvailable", false);
+            statusMap.put("state", "UNKNOWN");
             statusMap.put("error", t.getMessage());
         }
         return statusMap;

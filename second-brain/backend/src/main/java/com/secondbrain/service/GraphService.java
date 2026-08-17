@@ -341,16 +341,26 @@ public class GraphService {
         }
     }
 
-    public void deleteStaleChildren(String fileId, Set<String> keepChildIds) {
+    public List<String> deleteStaleChildren(String fileId, Set<String> keepChildIds) {
         try (var session = driver.session()) {
-            session.run("""
+            var result = session.run("""
                 MATCH (f:File {id: $fileId})-[:DECLARES]->(child)
                 WHERE NOT child.id IN $keepChildIds
+                WITH child, child.id AS deletedId
                 DETACH DELETE child
+                RETURN deletedId
                 """, Map.of("fileId", fileId, "keepChildIds", new ArrayList<>(keepChildIds)));
-            log.debug("Purged stale child nodes for file '{}'", fileId);
+            List<String> deleted = new ArrayList<>();
+            while (result.hasNext()) {
+                deleted.add(result.next().get("deletedId").asString());
+            }
+            if (!deleted.isEmpty()) {
+                log.info("Purged {} stale child nodes for file '{}': {}", deleted.size(), fileId, deleted);
+            }
+            return deleted;
         } catch (Exception e) {
             log.error("Failed purging stale children for {}: {}", fileId, e.getMessage());
+            return List.of();
         }
     }
 

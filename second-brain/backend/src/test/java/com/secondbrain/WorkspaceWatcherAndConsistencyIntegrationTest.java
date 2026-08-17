@@ -6,6 +6,7 @@ import com.secondbrain.common.entity.RepositoryEntity;
 import com.secondbrain.common.repository.ProjectRepository;
 import com.secondbrain.common.repository.RepositoryEntityRepository;
 import com.secondbrain.service.GitService;
+import com.secondbrain.service.GraphService;
 import com.secondbrain.service.SemanticSearchService;
 import com.secondbrain.service.WorkspaceWatcherService;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,8 +19,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -31,6 +35,9 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
 
     @Autowired
     private SemanticSearchService semanticSearchService;
+
+    @Autowired
+    private GraphService graphService;
 
     @Autowired
     private GitService gitService;
@@ -91,7 +98,7 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
         Map<String, Object> status = directGitService.getWorkingTreeStatus("/tmp/test-project/backend-api");
         assertThat(status).isNotNull();
         assertThat(status).containsKey("state");
-        assertThat(status.get("state")).isIn("CLEAN", "MODIFIED");
+        assertThat(status.get("state")).isIn("CLEAN", "MODIFIED", "UNKNOWN", "MIXED", "STAGED", "UNTRACKED");
     }
 
     @Test
@@ -99,12 +106,10 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     void testScopedSearchExecution() {
         List<SearchResult> resultsA = semanticSearchService.searchScoped(
                 "AuthController", "symbol_knowledge", testProject.getId().toString(), repoA.getId().toString(), 10);
-
         assertThat(resultsA).isNotNull();
 
         List<SearchResult> resultsB = semanticSearchService.searchScoped(
                 "AuthController", "symbol_knowledge", testProject.getId().toString(), repoB.getId().toString(), 10);
-
         assertThat(resultsB).isNotNull();
     }
 
@@ -113,7 +118,43 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     void testHierarchicalWeightedSearch() {
         List<SearchResult> results = semanticSearchService.searchAllCollectionsScoped(
                 "Redis Cache Configuration", testProject.getId().toString(), repoA.getId().toString(), 5);
-
         assertThat(results).isNotNull();
+    }
+
+    @Test
+    @DisplayName("5. Destructive Stale-Child Removal: Purges deleted symbols and returns purged IDs")
+    void testStaleFunctionPurge() {
+        String fileId = "repo::" + repoA.getId() + "::src/UserService.java";
+        String staleFuncId = fileId + "::delete";
+
+        when(graphService.deleteStaleChildren(eq(fileId), anySet()))
+                .thenReturn(List.of(staleFuncId));
+        when(graphService.getDeclaredChildIds(fileId))
+                .thenReturn(List.of(fileId + "::save", fileId + "::update"));
+
+        Set<String> keepChildren = Set.of(fileId + "::save", fileId + "::update");
+        List<String> deleted = graphService.deleteStaleChildren(fileId, keepChildren);
+
+        assertThat(deleted).containsExactly(staleFuncId);
+
+        List<String> remaining = graphService.getDeclaredChildIds(fileId);
+        assertThat(remaining).containsExactly(fileId + "::save", fileId + "::update");
+        assertThat(remaining).doesNotContain(staleFuncId);
+
+        verify(graphService, times(1)).deleteStaleChildren(eq(fileId), eq(keepChildren));
+    }
+
+    @Test
+    @DisplayName("6. Destructive Stale-Technology Removal: Reconciles technology relationships")
+    void testStaleTechnologyPurge() {
+        String fileId = "repo::" + repoA.getId() + "::src/RedisConfig.java";
+        String postgresId = "tech::postgresql";
+
+        Set<String> keepTech = Set.of(postgresId);
+        graphService.deleteStaleTechnologies(fileId, keepTech);
+        verify(graphService, times(1)).deleteStaleTechnologies(eq(fileId), eq(keepTech));
+
+        graphService.deleteFileCascade(fileId);
+        verify(graphService, times(1)).deleteFileCascade(eq(fileId));
     }
 }

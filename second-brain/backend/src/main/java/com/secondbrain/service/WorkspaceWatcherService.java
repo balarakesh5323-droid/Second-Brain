@@ -513,16 +513,13 @@ public class WorkspaceWatcherService {
                 graphService.createRelationship("File", fileId, "Class", clsId, "DECLARES", null);
             }
 
-            // Cleanup stale children in Neo4j and Qdrant
-            List<String> oldChildren = graphService.getDeclaredChildIds(fileId);
-            for (String oldChildId : oldChildren) {
-                if (!currentChildIds.contains(oldChildId)) {
-                    String pointId = UUID.nameUUIDFromBytes(oldChildId.getBytes()).toString();
-                    vectorStoreService.delete("symbol_knowledge", pointId);
-                    log.info("⚡ Purged stale symbol vector '{}' from Qdrant", oldChildId);
-                }
+            // Atomic cleanup of stale children in Neo4j and Qdrant
+            List<String> deletedChildIds = graphService.deleteStaleChildren(fileId, currentChildIds);
+            for (String deletedId : deletedChildIds) {
+                String pointId = UUID.nameUUIDFromBytes(deletedId.getBytes()).toString();
+                vectorStoreService.delete("symbol_knowledge", pointId);
+                log.info("⚡ Purged stale symbol vector '{}' from Qdrant", deletedId);
             }
-            graphService.deleteStaleChildren(fileId, currentChildIds);
 
             // C. Reconcile Architectural Technologies (Delete obsolete tech links)
             extractAndReconcileArchitecturalPatterns(content, fileName, fileId);
