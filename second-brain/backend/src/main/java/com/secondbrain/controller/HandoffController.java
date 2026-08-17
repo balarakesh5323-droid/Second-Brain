@@ -21,13 +21,26 @@ public class HandoffController {
         return ResponseEntity.status(HttpStatus.CREATED).body(agentHandoffService.createHandoff(handoff));
     }
 
+    @GetMapping
+    public ResponseEntity<java.util.List<AgentHandoff>> getAllHandoffs() {
+        return ResponseEntity.ok(agentHandoffService.getAll());
+    }
+
     @GetMapping("/repository/{repositoryId}/latest")
     public ResponseEntity<AgentHandoff> getLatestForRepository(@PathVariable UUID repositoryId) {
-        return ResponseEntity.ok(agentHandoffService.getLatestForRepository(repositoryId));
+        AgentHandoff handoff = agentHandoffService.getLatestForRepository(repositoryId);
+        if (handoff == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(handoff);
     }
 
     @GetMapping("/session/{sessionId}")
     public ResponseEntity<AgentHandoff> getBySession(@PathVariable UUID sessionId) {
-        return ResponseEntity.ok(agentHandoffService.getBySession(sessionId));
+        AgentHandoff handoff = agentHandoffService.getBySession(sessionId);
+        if (handoff == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(handoff);
     }
 }

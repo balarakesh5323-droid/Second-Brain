@@ -10,8 +10,10 @@ export default function RepositoryExplorer() {
 
   const { data: repos, isLoading } = useQuery({
     queryKey: ['repositories'],
-    queryFn: () => brainApi.getRepositories().then(r => r.data),
+    queryFn: () => brainApi.getRepositories(),
   });
+
+  const repoList = Array.isArray(repos) ? repos : [];
 
   const addRepo = useMutation({
     mutationFn: (repoUrl) => brainApi.addRepository(repoUrl),
@@ -38,7 +40,7 @@ export default function RepositoryExplorer() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Repositories</h2>
+        <h2 className="text-2xl font-bold">Repository Explorer</h2>
       </div>
 
       {/* Add Repository Form */}
@@ -58,7 +60,7 @@ export default function RepositoryExplorer() {
           <button
             type="submit"
             disabled={addRepo.isPending || !url.trim()}
-            className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer"
           >
             {addRepo.isPending ? (
               <>
@@ -89,13 +91,13 @@ export default function RepositoryExplorer() {
                 <div className="space-y-1">
                   <p className="font-medium text-green-300">Repository ingested successfully</p>
                   <div className="text-sm text-gray-400 space-y-0.5">
-                    <p>Project: <span className="text-gray-300">{ingestResult.data.projectName}</span></p>
-                    <p>Languages: <span className="text-gray-300">{(ingestResult.data.languages || []).join(', ') || 'N/A'}</span></p>
-                    <p>Frameworks: <span className="text-gray-300">{(ingestResult.data.frameworks || []).join(', ') || 'N/A'}</span></p>
+                    <p>Project: <span className="text-gray-300">{ingestResult.data?.projectName}</span></p>
+                    <p>Languages: <span className="text-gray-300">{(ingestResult.data?.languages || []).join(', ') || 'N/A'}</span></p>
+                    <p>Frameworks: <span className="text-gray-300">{(ingestResult.data?.frameworks || []).join(', ') || 'N/A'}</span></p>
                     <p>
-                      {ingestResult.data.commitsEmbedded} commits embedded, {ingestResult.data.codeFilesEmbedded} code files embedded, {ingestResult.data.graphNodesCreated} graph nodes
+                      {ingestResult.data?.commitsEmbedded || 0} commits embedded, {ingestResult.data?.codeFilesEmbedded || 0} code files embedded, {ingestResult.data?.graphNodesCreated || 0} graph nodes
                     </p>
-                    <p className="text-gray-500">Completed in {ingestResult.data.elapsedMs}ms</p>
+                    <p className="text-gray-500">Completed in {ingestResult.data?.elapsedMs || 0}ms</p>
                   </div>
                 </div>
               ) : (
@@ -109,13 +111,13 @@ export default function RepositoryExplorer() {
       {/* Repository List */}
       {isLoading ? (
         <div className="text-gray-500 text-sm">Loading repositories...</div>
-      ) : repos?.length === 0 ? (
+      ) : repoList.length === 0 ? (
         <div className="text-gray-500 text-sm text-center py-12">
           No repositories indexed yet. Add a GitHub URL above to get started.
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {repos?.map((repo) => (
+          {repoList.map((repo) => (
             <div key={repo.id} className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
               <div className="flex items-center gap-3 mb-3">
                 <FolderGit2 className="w-5 h-5 text-purple-400 flex-shrink-0" />
@@ -129,17 +131,19 @@ export default function RepositoryExplorer() {
                 <span>{repo.primaryLanguage || 'Unknown'}</span>
                 <span className="text-gray-600">|</span>
                 <GitBranch className="w-4 h-4" />
-                <span>{repo.defaultBranch}</span>
+                <span>{repo.defaultBranch || 'main'}</span>
               </div>
-              <a
-                href={repo.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                Open on GitHub
-              </a>
+              {repo.url && (
+                <a
+                  href={repo.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open on GitHub
+                </a>
+              )}
             </div>
           ))}
         </div>

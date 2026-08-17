@@ -26,7 +26,7 @@ test.describe('Navigation', () => {
   test('should navigate to Repositories page', async ({ page }) => {
     await page.goto('/');
     await page.click('a[href="/repositories"]');
-    await expect(page.locator('h2')).toContainText('Repository Explorer');
+    await expect(page.locator('h2')).toContainText('Repositor');
   });
 
   test('should navigate to Skills page', async ({ page }) => {

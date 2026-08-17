@@ -20,13 +20,17 @@ public class AgentHandoffService {
         return agentHandoffRepository.save(handoff);
     }
 
+    public java.util.List<AgentHandoff> getAll() {
+        return agentHandoffRepository.findAllByOrderByCreatedAtDesc();
+    }
+
     public AgentHandoff getLatestForRepository(UUID repositoryId) {
         return agentHandoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repositoryId)
-                .orElseThrow(() -> new ResourceNotFoundException("AgentHandoff for repository", repositoryId));
+                .orElse(null);
     }
 
     public AgentHandoff getBySession(UUID sessionId) {
         return agentHandoffRepository.findBySessionId(sessionId)
-                .orElseThrow(() -> new ResourceNotFoundException("AgentHandoff for session", sessionId));
+                .orElse(null);
     }
 }

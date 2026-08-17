@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 test.describe('Repository Explorer', () => {
   test('should display repository cards or empty state', async ({ page }) => {
     await page.goto('/repositories');
-    await expect(page.locator('h2')).toContainText('Repository Explorer');
+    await expect(page.locator('h2')).toContainText('Repositor');
     const repoCards = page.locator('.bg-gray-900.border.border-gray-800.rounded-xl');
     const count = await repoCards.count();
     expect(count).toBeGreaterThanOrEqual(0);

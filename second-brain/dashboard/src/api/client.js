@@ -5,47 +5,61 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
+const safeArray = async (promise) => {
+  try {
+    const res = await promise;
+    if (Array.isArray(res.data)) return res.data;
+    if (Array.isArray(res.data?.content)) return res.data.content;
+    if (Array.isArray(res.data?.items)) return res.data.items;
+    return [];
+  } catch (err) {
+    console.warn('API call failed, returning empty array:', err.message);
+    return [];
+  }
+};
+
 export const brainApi = {
   // Memory
-  searchMemory: (query) => api.get(`/memory/search?q=${encodeURIComponent(query)}`),
-  getMemories: () => api.get('/memory'),
+  searchMemory: (query) => api.get(`/memory/search?q=${encodeURIComponent(query)}`).then(r => Array.isArray(r.data) ? r.data : []).catch(() => []),
+  getMemories: () => safeArray(api.get('/memory')),
   createMemory: (data) => api.post('/memory', data),
   
   // Projects
-  getProjects: () => api.get('/projects'),
+  getProjects: () => safeArray(api.get('/projects')),
   createProject: (data) => api.post('/projects', data),
   
   // Repositories
-  getRepositories: () => api.get('/repositories'),
+  getRepositories: () => safeArray(api.get('/repositories')),
   addRepository: (url, projectId) => api.post('/repository-intel/add-url', { url, projectId }),
   
   // Agents
-  getAgents: () => api.get('/agents'),
+  getAgents: () => safeArray(api.get('/agents')),
   
   // Sessions
-  getRecentSessions: () => api.get('/sessions/recent'),
+  getRecentSessions: () => safeArray(api.get('/sessions/recent')),
   
   // Events
-  getRecentEvents: () => api.get('/events'),
+  getRecentEvents: () => safeArray(api.get('/events')),
   
   // Decisions
-  getRecentDecisions: () => api.get('/decisions/recent'),
+  getRecentDecisions: () => safeArray(api.get('/decisions/recent')),
   
   // Tasks
-  getOpenTasks: () => api.get('/tasks/open'),
+  getOpenTasks: () => safeArray(api.get('/tasks/open')),
   
   // Skills
-  getSkills: () => api.get('/skills'),
+  getSkills: () => safeArray(api.get('/skills')),
   
   // Graph
-  getGraphStats: () => api.get('/graph/stats'),
-  getGraphVisual: (limit) => api.get('/graph/visual', { params: { limit } }),
+  getGraphStats: () => api.get('/graph/stats').then(r => r.data || {}).catch(() => ({})),
+  getGraphVisual: (limit) => api.get('/graph/visual', { params: { limit } }).then(r => r.data || { nodes: [], edges: [] }).catch(() => ({ nodes: [], edges: [] })),
   
   // Handoffs
-  getLatestHandoff: (repoId) => api.get(`/handoffs/repository/${repoId}/latest`),
+  getHandoffs: () => safeArray(api.get('/handoffs')),
+  getLatestHandoff: (repoId) => api.get(`/handoffs/repository/${repoId}/latest`).then(r => r.data || null).catch(() => null),
   
   // Health
-  getHealth: () => api.get('/actuator/health'),
+  getHealth: () => api.get('/actuator/health').then(r => r.data || {}).catch(() => ({ status: 'UNKNOWN' })),
 };
 
 export default api;

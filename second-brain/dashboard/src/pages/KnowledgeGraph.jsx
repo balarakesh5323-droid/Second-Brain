@@ -1,8 +1,9 @@
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect, lazy, Suspense } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { brainApi } from '../api/client';
 import { Network, RefreshCw, Search, X } from 'lucide-react';
-import ReactForceGraph2D from 'react-force-graph-2d';
+
+const ReactForceGraph2D = lazy(() => import('react-force-graph-2d'));
 
 const NODE_COLORS = {
   Repository: '#a855f7',
@@ -28,12 +29,12 @@ export default function KnowledgeGraph() {
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['graphVisual'],
-    queryFn: () => brainApi.getGraphVisual(300).then(r => r.data),
+    queryFn: () => brainApi.getGraphVisual(300),
   });
 
   const { data: stats } = useQuery({
     queryKey: ['graphStats'],
-    queryFn: () => brainApi.getGraphStats().then(r => r.data),
+    queryFn: () => brainApi.getGraphStats(),
   });
 
   useEffect(() => {
@@ -201,20 +202,22 @@ export default function KnowledgeGraph() {
               <p>No graph data found. Add a repository to populate the knowledge graph.</p>
             </div>
           ) : graphReady ? (
-            <ReactForceGraph2D
-              ref={fgRef}
-              graphData={graphData}
-              nodeCanvasObject={nodeCanvasObject}
-              linkCanvasObject={linkCanvasObject}
-              onNodeClick={handleNodeClick}
-              nodeRelSize={6}
-              linkDirectionalParticles={0}
-              backgroundColor="#030712"
-              d3AlphaDecay={0.02}
-              d3VelocityDecay={0.3}
-              warmupTicks={100}
-              cooldownTicks={200}
-            />
+            <Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500">Loading graph library...</div>}>
+              <ReactForceGraph2D
+                ref={fgRef}
+                graphData={graphData}
+                nodeCanvasObject={nodeCanvasObject}
+                linkCanvasObject={linkCanvasObject}
+                onNodeClick={handleNodeClick}
+                nodeRelSize={6}
+                linkDirectionalParticles={0}
+                backgroundColor="#030712"
+                d3AlphaDecay={0.02}
+                d3VelocityDecay={0.3}
+                warmupTicks={100}
+                cooldownTicks={200}
+              />
+            </Suspense>
           ) : (
             <div className="flex items-center justify-center h-full text-gray-500">Initializing graph...</div>
           )}
