@@ -76,6 +76,55 @@ function getNodeIcon(label) {
   }
 }
 
+export function getNodeDisplayName(node) {
+  if (!node) return 'Unknown';
+  const props = node.properties || {};
+
+  if (props.name && typeof props.name === 'string' && props.name.trim()) {
+    return props.name.trim();
+  }
+
+  if (node.label === 'File') {
+    if (props.name && typeof props.name === 'string') return props.name;
+    if (props.path) {
+      const parts = props.path.split(/[/\\]/);
+      return parts[parts.length - 1];
+    }
+  }
+
+  if (node.label === 'Endpoint') {
+    if (props.path) {
+      return `${props.method || 'GET'} ${props.path}`;
+    }
+  }
+
+  if (node.label === 'Function' || node.label === 'Class') {
+    if (props.name) return props.name;
+  }
+
+  if (node.label === 'Memory' && props.content) {
+    return props.content.length > 25 ? props.content.slice(0, 22) + '...' : props.content;
+  }
+
+  if (props.title) return props.title;
+
+  if (typeof node.id === 'string' && node.id.includes('::')) {
+    const segments = node.id.split('::');
+    return segments[segments.length - 1];
+  }
+
+  if (typeof node.id === 'string' && (node.id.includes('/') || node.id.includes('\\'))) {
+    const parts = node.id.split(/[/\\]/);
+    return parts[parts.length - 1];
+  }
+
+  if (typeof node.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(node.id)) {
+    return `${node.label || 'Node'} (${node.id.slice(0, 8)})`;
+  }
+
+  return String(node.id || node.label || 'Node');
+}
+
 function NodeDetailPanel({ node, allNodes, allEdges, onClose, onSelectNodeId, onCenterNode }) {
   const [activeTab, setActiveTab] = useState('content');
   const [copiedId, setCopiedId] = useState(false);
@@ -106,7 +155,7 @@ function NodeDetailPanel({ node, allNodes, allEdges, onClose, onSelectNodeId, on
           relType: e.label || 'CONNECTED_TO',
           targetId: tgtId,
           targetLabel: tgtNode.label || 'Unknown',
-          targetName: tgtNode.properties?.name || tgtNode.properties?.path || tgtId,
+          targetName: getNodeDisplayName(tgtNode),
           targetColor: getColor(tgtNode.label),
         });
       }
@@ -117,7 +166,7 @@ function NodeDetailPanel({ node, allNodes, allEdges, onClose, onSelectNodeId, on
           relType: e.label || 'CONNECTED_TO',
           sourceId: srcId,
           sourceLabel: srcNode.label || 'Unknown',
-          sourceName: srcNode.properties?.name || srcNode.properties?.path || srcId,
+          sourceName: getNodeDisplayName(srcNode),
           sourceColor: getColor(srcNode.label),
         });
       }
@@ -152,7 +201,7 @@ function NodeDetailPanel({ node, allNodes, allEdges, onClose, onSelectNodeId, on
   }, []);
 
   // Display name formatting
-  const displayName = properties.name || properties.path?.split('/').pop() || (node.id?.includes('::') ? node.id.split('::').pop() : node.id);
+  const displayName = getNodeDisplayName(node);
 
   const filteredProperties = useMemo(() => {
     const entries = Object.entries(node?.properties || {});
@@ -773,13 +822,17 @@ export default function KnowledgeGraph() {
   const graphData = useMemo(() => {
     if (!data || !data.nodes || !data.edges) return { nodes: [], links: [] };
 
-    const nodes = (Array.isArray(data.nodes) ? data.nodes : []).map(n => ({
-      id: n.id,
-      label: n.label,
-      properties: n.properties || {},
-      color: getColor(n.label),
-      size: 6,
-    }));
+    const nodes = (Array.isArray(data.nodes) ? data.nodes : []).map(n => {
+      const displayName = getNodeDisplayName(n);
+      return {
+        id: n.id,
+        label: n.label,
+        properties: n.properties || {},
+        name: displayName,
+        color: getColor(n.label),
+        size: n.label === 'Project' ? 10 : n.label === 'Repository' ? 9 : n.label === 'File' ? 7 : 5,
+      };
+    });
 
     const nodeIdSet = new Set(nodes.map(n => n.id));
 
@@ -804,9 +857,10 @@ export default function KnowledgeGraph() {
 
     if (search) {
       const q = search.toLowerCase();
-      const matchIds = new Set(filteredNodes.filter(n =>
-        n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q)
-      ).map(n => n.id));
+      const matchIds = new Set(filteredNodes.filter(n => {
+        const name = (n.name || getNodeDisplayName(n)).toLowerCase();
+        return name.includes(q) || n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q);
+      }).map(n => n.id));
       filteredNodes = filteredNodes.filter(n => matchIds.has(n.id));
       filteredLinks = filteredLinks.filter(l => matchIds.has(l.source) || matchIds.has(l.target));
     }
@@ -857,25 +911,56 @@ export default function KnowledgeGraph() {
   const nodeCanvasObject = useCallback((node, ctx) => {
     if (!node || node.x == null || node.y == null) return;
     const size = node.size || 6;
+    const isSelected = selectedNode?.id === node.id;
+
+    if (isSelected) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, size + 3.5, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(168, 85, 247, 0.35)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
     ctx.beginPath();
     ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
     ctx.fillStyle = node.color || '#64748b';
     ctx.fill();
 
-    if (selectedNode?.id === node.id) {
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, size + 3, 0, 2 * Math.PI);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
+    ctx.strokeStyle = isSelected ? '#ffffff' : 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = isSelected ? 1.5 : 0.8;
+    ctx.stroke();
 
-    const label = node.id?.length > 30 ? node.id.slice(0, 27) + '...' : node.id;
-    ctx.font = '3px sans-serif';
+    const displayName = node.name || getNodeDisplayName(node);
+    const labelText = displayName.length > 24 ? displayName.slice(0, 22) + '…' : displayName;
+
+    const fontSize = 3.6;
+    ctx.font = `600 ${fontSize}px system-ui, -apple-system, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillStyle = '#d1d5db';
-    ctx.fillText(label || '', node.x, node.y + size + 2);
+
+    const textWidth = ctx.measureText(labelText).width;
+    const padding = 1.2;
+    const pillHeight = fontSize + 1.8;
+    const pillY = node.y + size + 1.8;
+
+    ctx.fillStyle = 'rgba(3, 7, 18, 0.85)';
+    ctx.beginPath();
+    ctx.roundRect(
+      node.x - textWidth / 2 - padding,
+      pillY,
+      textWidth + padding * 2,
+      pillHeight,
+      1.5
+    );
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    ctx.lineWidth = 0.4;
+    ctx.stroke();
+
+    ctx.fillStyle = isSelected ? '#38bdf8' : '#f1f5f9';
+    ctx.fillText(labelText, node.x, pillY + 0.8);
   }, [selectedNode]);
 
   const linkCanvasObject = useCallback((link, ctx) => {
@@ -967,6 +1052,7 @@ export default function KnowledgeGraph() {
                 nodeCanvasObject={nodeCanvasObject}
                 linkCanvasObject={linkCanvasObject}
                 onNodeClick={handleNodeClick}
+                nodeLabel={(node) => `${node.label}: ${node.name || getNodeDisplayName(node)}`}
                 nodeRelSize={6}
                 linkDirectionalParticles={0}
                 backgroundColor="#030712"
