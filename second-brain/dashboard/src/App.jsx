@@ -6,6 +6,7 @@ import AgentActivity from './pages/AgentActivity';
 import RepositoryExplorer from './pages/RepositoryExplorer';
 import SkillsView from './pages/SkillsView';
 import HandoffsView from './pages/HandoffsView';
+import KnowledgeGraph from './pages/KnowledgeGraph';
 import Documentation from './pages/Documentation';
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
           <Route path="memory" element={<MemoryExplorer />} />
           <Route path="agents" element={<AgentActivity />} />
           <Route path="repositories" element={<RepositoryExplorer />} />
+          <Route path="graph" element={<KnowledgeGraph />} />
           <Route path="skills" element={<SkillsView />} />
           <Route path="handoffs" element={<HandoffsView />} />
           <Route path="docs" element={<Documentation />} />

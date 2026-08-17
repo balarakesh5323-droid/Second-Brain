@@ -22,6 +22,12 @@ public class GraphController {
         return ResponseEntity.ok(graphService.getStats());
     }
 
+    @GetMapping("/visual")
+    public ResponseEntity<Map<String, Object>> getVisualGraph(
+            @RequestParam(defaultValue = "200") int limit) {
+        return ResponseEntity.ok(graphService.getVisualGraph(limit));
+    }
+
     @GetMapping("/nodes/{label}")
     public ResponseEntity<List<Map<String, Object>>> getNodes(
             @PathVariable String label,

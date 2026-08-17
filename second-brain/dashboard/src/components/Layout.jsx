@@ -1,11 +1,12 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Brain, Database, GitBranch, Users, Zap, ArrowRightLeft, Home, BookOpen } from 'lucide-react';
+import { Brain, Database, GitBranch, Users, Zap, ArrowRightLeft, Home, BookOpen, Network } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Home', icon: Home },
   { path: '/memory', label: 'Memory', icon: Database },
   { path: '/agents', label: 'Agents', icon: Users },
   { path: '/repositories', label: 'Repositories', icon: GitBranch },
+  { path: '/graph', label: 'Graph', icon: Network },
   { path: '/skills', label: 'Skills', icon: Zap },
   { path: '/handoffs', label: 'Handoffs', icon: ArrowRightLeft },
   { path: '/docs', label: 'Docs', icon: BookOpen },

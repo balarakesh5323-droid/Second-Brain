@@ -39,6 +39,7 @@ export const brainApi = {
   
   // Graph
   getGraphStats: () => api.get('/graph/stats'),
+  getGraphVisual: (limit) => api.get('/graph/visual', { params: { limit } }),
   
   // Handoffs
   getLatestHandoff: (repoId) => api.get(`/handoffs/repository/${repoId}/latest`),

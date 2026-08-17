@@ -128,6 +128,54 @@ public class GraphService {
         }
     }
 
+    public Map<String, Object> getVisualGraph(int limit) {
+        try (var session = driver.session()) {
+            var nodeResult = session.run(
+                "MATCH (n) RETURN n, labels(n) as labels LIMIT $limit",
+                Map.of("limit", limit)
+            );
+
+            List<Map<String, Object>> nodes = new ArrayList<>();
+            List<String> nodeIds = new ArrayList<>();
+            while (nodeResult.hasNext()) {
+                var record = nodeResult.next();
+                Map<String, Object> props = record.get("n").asMap();
+                List<String> labels = record.get("labels").asList().stream()
+                    .map(Object::toString).toList();
+                String id = (String) props.getOrDefault("id", props.getOrDefault("name", "unknown"));
+                String label = labels.isEmpty() ? "Unknown" : labels.get(0);
+
+                nodes.add(Map.of(
+                    "id", id,
+                    "label", label,
+                    "properties", props
+                ));
+                nodeIds.add(id);
+            }
+
+            var relResult = session.run(
+                "MATCH (a)-[r]->(b) RETURN a.id as fromId, b.id as toId, type(r) as relType, properties(r) as props LIMIT $limit",
+                Map.of("limit", limit * 3)
+            );
+
+            List<Map<String, Object>> edges = new ArrayList<>();
+            int edgeIdx = 0;
+            while (relResult.hasNext()) {
+                var record = relResult.next();
+                String fromId = record.get("fromId").asString("unknown");
+                String toId = record.get("toId").asString("unknown");
+                edges.add(Map.of(
+                    "id", "e" + edgeIdx++,
+                    "source", fromId,
+                    "target", toId,
+                    "label", record.get("relType").asString()
+                ));
+            }
+
+            return Map.of("nodes", nodes, "edges", edges);
+        }
+    }
+
     @PreDestroy
     public void close() {
         if (driver != null) {
