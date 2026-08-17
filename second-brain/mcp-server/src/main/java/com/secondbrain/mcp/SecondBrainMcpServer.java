@@ -360,6 +360,51 @@ public class SecondBrainMcpServer {
                 (exchange, args) -> {
                     String target = (String) args.get("repository_id_or_path");
                     return toolHandler.handleGetContinuityState(target);
+                }),
+
+            buildTool("brain_create_project",
+                "Create a new Project in Second Brain with optional automatic Git repository cloning, AST analysis, and graph indexing.",
+                "object", Map.of(
+                    "name", Map.of("type", "string", "description", "Name of the project (e.g. 'CoreBanking' or 'payment-service')"),
+                    "description", Map.of("type", "string", "description", "Optional project description"),
+                    "path", Map.of("type", "string", "description", "Optional project path / workspace directory"),
+                    "git_repo", Map.of("type", "string", "description", "Optional Git repository URL (e.g. 'https://github.com/org/repo.git') to automatically clone and index")
+                ), List.of(),
+                (exchange, args) -> {
+                    String name = (String) args.get("name");
+                    String description = (String) args.get("description");
+                    String path = (String) args.get("path");
+                    String gitRepo = (String) args.get("git_repo");
+                    return toolHandler.handleCreateProject(name, description, path, gitRepo);
+                }),
+
+            buildTool("brain_list_projects",
+                "List all registered projects in Second Brain with linked repositories, paths, and task counts.",
+                "object", Map.of(), List.of(),
+                (exchange, args) -> toolHandler.handleListProjects()),
+
+            buildTool("brain_get_project",
+                "Get full overview and metadata of a project (repositories, tasks, decisions, documents) by project name or UUID.",
+                "object", Map.of(
+                    "project", Map.of("type", "string", "description", "Project name or UUID")
+                ), List.of("project"),
+                (exchange, args) -> {
+                    String project = (String) args.get("project");
+                    return toolHandler.handleGetProject(project);
+                }),
+
+            buildTool("brain_use_project",
+                "Activate and switch focus to a specific project. Initializes an agent session and returns the startup context briefing.",
+                "object", Map.of(
+                    "project", Map.of("type", "string", "description", "Project name or UUID to work on"),
+                    "agent_name", Map.of("type", "string", "description", "Your agent name (e.g. claude-code, codex, cursor)"),
+                    "task", Map.of("type", "string", "description", "Current task or goal on this project")
+                ), List.of("project"),
+                (exchange, args) -> {
+                    String project = (String) args.get("project");
+                    String agent = (String) args.get("agent_name");
+                    String task = (String) args.get("task");
+                    return toolHandler.handleUseProject(agent, project, task);
                 })
         );
     }

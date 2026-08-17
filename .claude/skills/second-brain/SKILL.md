@@ -129,6 +129,10 @@ When completing your turn or switching tasks:
 
 | Goal | Primary MCP Tool | REST Equivalent |
 | :--- | :--- | :--- |
+| **Create Project / Ingest Repo** | `brain_create_project(name, git_repo)` | `POST /api/v1/projects/create-with-repo` |
+| **List All Projects** | `brain_list_projects()` | `GET /api/v1/projects` |
+| **Inspect Project Details** | `brain_get_project(project)` | `GET /api/v1/projects/{id}` |
+| **Switch / Work on Project** | `brain_use_project(project, agent_name, task)` | `POST /api/v1/sessions` |
 | **Get Full Task Context** | `brain_get_context(query, repository_id)` | `POST /api/v1/context/assemble` |
 | **Get Continuity Snapshot** | `brain_get_continuity_state(repo_path)` | `GET /api/v1/bridge/continuity?repo=...` |
 | **Check Previous Attempts** | `brain_get_attempts(repository_id, limit)` | `GET /api/v1/bridge/attempts` |

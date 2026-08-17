@@ -23,6 +23,16 @@ public class ProjectController {
                 .body(projectService.create(project.getName(), project.getDescription(), project.getPath()));
     }
 
+    @PostMapping("/create-with-repo")
+    public ResponseEntity<java.util.Map<String, Object>> createWithRepo(@RequestBody java.util.Map<String, String> payload) {
+        String name = payload.get("name");
+        String description = payload.get("description");
+        String path = payload.get("path");
+        String gitRepo = payload.get("gitRepo") != null ? payload.get("gitRepo") : payload.get("git_repo");
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectService.createWithRepo(name, description, path, gitRepo));
+    }
+
     @GetMapping
     public ResponseEntity<List<Project>> getAll() {
         return ResponseEntity.ok(projectService.getAll());

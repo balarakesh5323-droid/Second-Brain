@@ -15,6 +15,8 @@ import java.util.UUID;
 public class ProjectService {
 
     private final ProjectRepository projectRepository;
+    private final RepositoryIngestionService ingestionService;
+    private final GitHubCloneService cloneService;
 
     public List<Project> getAll() {
         return projectRepository.findAll();
@@ -33,6 +35,46 @@ public class ProjectService {
                 .path(path)
                 .build();
         return projectRepository.save(project);
+    }
+
+    @Transactional
+    public java.util.Map<String, Object> createWithRepo(String name, String description, String path, String gitRepo) {
+        java.util.Map<String, Object> response = new java.util.HashMap<>();
+
+        if (gitRepo != null && !gitRepo.isBlank()) {
+            String repoName = (name != null && !name.isBlank()) ? name : extractRepoNameFromUrl(gitRepo);
+            String projectPath = (path != null && !path.isBlank()) ? path : "/repos/" + repoName;
+
+            Project project = projectRepository.findByName(repoName)
+                    .orElseGet(() -> {
+                        Project p = Project.builder()
+                                .name(repoName)
+                                .description(description != null ? description : "Project for " + gitRepo)
+                                .path(projectPath)
+                                .build();
+                        return projectRepository.save(p);
+                    });
+
+            var ingestResult = ingestionService.ingestFromUrl(gitRepo, project.getId());
+            response.put("project", project);
+            response.put("ingestion", ingestResult);
+            response.put("status", "success");
+        } else {
+            Project project = create(name, description, path);
+            response.put("project", project);
+            response.put("status", "success");
+        }
+
+        return response;
+    }
+
+    private String extractRepoNameFromUrl(String url) {
+        if (url == null || url.isBlank()) return "project-" + UUID.randomUUID().toString().substring(0, 8);
+        String clean = url.trim();
+        if (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
+        if (clean.endsWith(".git")) clean = clean.substring(0, clean.length() - 4);
+        int slashIdx = clean.lastIndexOf('/');
+        return (slashIdx >= 0 && slashIdx < clean.length() - 1) ? clean.substring(slashIdx + 1) : clean;
     }
 
     @Transactional

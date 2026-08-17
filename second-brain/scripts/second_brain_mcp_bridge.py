@@ -119,6 +119,51 @@ TOOLS = [
         }
     },
     {
+        "name": "brain_create_project",
+        "description": "Create a new Project in Second Brain with optional automatic Git repository cloning, AST analysis, and graph indexing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Name of the project (e.g. 'CoreBanking' or 'payment-service')"},
+                "description": {"type": "string", "description": "Optional project description"},
+                "path": {"type": "string", "description": "Optional workspace path"},
+                "git_repo": {"type": "string", "description": "Optional Git repository URL (e.g. 'https://github.com/org/repo.git')"}
+            }
+        }
+    },
+    {
+        "name": "brain_list_projects",
+        "description": "List all registered projects in Second Brain with linked repositories, paths, and task counts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "brain_get_project",
+        "description": "Get full overview and metadata of a project (repositories, tasks, decisions, documents) by project name or UUID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Project name or UUID"}
+            },
+            "required": ["project"]
+        }
+    },
+    {
+        "name": "brain_use_project",
+        "description": "Activate and switch focus to a specific project. Initializes an agent session and returns the startup context briefing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "Project name or UUID to work on"},
+                "agent_name": {"type": "string", "description": "Your agent name (e.g. claude-code, codex, cursor)"},
+                "task": {"type": "string", "description": "Current task or goal on this project"}
+            },
+            "required": ["project"]
+        }
+    },
+    {
         "name": "brain_doctor",
         "description": "Check Second Brain system health, vector database, graph store, and background worker status.",
         "inputSchema": {
@@ -209,6 +254,61 @@ def handle_tool_call(name, args):
         }
         res = make_http_request("/api/v1/handoffs", method="POST", data=payload)
         return f"Created handoff: {res.get('id', 'OK')}"
+
+    elif name == "brain_create_project":
+        payload = {
+            "name": args.get("name", ""),
+            "description": args.get("description", ""),
+            "path": args.get("path", ""),
+            "gitRepo": args.get("git_repo", "")
+        }
+        res = make_http_request("/api/v1/projects/create-with-repo", method="POST", data=payload)
+        return json.dumps(res, indent=2)
+
+    elif name == "brain_list_projects":
+        res = make_http_request("/api/v1/projects")
+        if isinstance(res, list):
+            sb = ["=== Second Brain Projects ===\n"]
+            for p in res:
+                sb.append(f"📁 Project: {p.get('name')}\n   ID: {p.get('id')}\n   Path: {p.get('path', 'N/A')}\n   Description: {p.get('description', '')}\n")
+            return "\n".join(sb) if len(res) > 0 else "No projects registered yet."
+        return json.dumps(res, indent=2)
+
+    elif name == "brain_get_project":
+        proj = args.get("project", "")
+        res = make_http_request("/api/v1/projects")
+        matched = None
+        if isinstance(res, list):
+            for p in res:
+                if str(p.get("id")) == proj or p.get("name", "").lower() == proj.lower():
+                    matched = p
+                    break
+        if matched:
+            repos = make_http_request(f"/api/v1/repositories")
+            linked_repos = [r for r in repos if isinstance(r, dict) and r.get("project", {}).get("id") == matched.get("id")] if isinstance(repos, list) else []
+            return f"=== Project: {matched.get('name')} ===\nID: {matched.get('id')}\nPath: {matched.get('path')}\nDescription: {matched.get('description')}\nLinked Repositories: {len(linked_repos)}"
+        return f"Project not found: {proj}"
+
+    elif name == "brain_use_project":
+        proj = args.get("project", "")
+        agent = args.get("agent_name", "ai-agent")
+        task = args.get("task", f"Working on {proj}")
+        # Search project
+        res = make_http_request("/api/v1/projects")
+        matched = None
+        if isinstance(res, list):
+            for p in res:
+                if str(p.get("id")) == proj or p.get("name", "").lower() == proj.lower():
+                    matched = p
+                    break
+        if matched:
+            sess = make_http_request("/api/v1/sessions", method="POST", data={
+                "agentName": agent,
+                "task": task,
+                "projectId": matched.get("id")
+            })
+            return f"🎯 ACTIVATED PROJECT: {matched.get('name')}\nSession: {sess.get('id', 'OK')}\nAgent: {agent}\nTask: {task}\nWorkspace: {matched.get('path', 'N/A')}"
+        return f"Could not find project: {proj}"
 
     elif name == "brain_doctor":
         health = make_http_request("/actuator/health")

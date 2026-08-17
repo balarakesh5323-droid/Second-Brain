@@ -658,4 +658,209 @@ public class BrainToolHandler {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }
     }
+
+    public CallToolResult handleCreateProject(String name, String description, String path, String gitRepo) {
+        try {
+            if ((name == null || name.isBlank()) && (gitRepo == null || gitRepo.isBlank())) {
+                return new CallToolResult(List.of(new TextContent("Error: Either project name or git repository URL must be provided.")), true);
+            }
+
+            if (gitRepo != null && !gitRepo.isBlank()) {
+                if (name == null || name.isBlank()) {
+                    var cloneInfo = gitHubCloneService.cloneRepository(gitRepo);
+                    name = cloneInfo.repoName();
+                }
+
+                String finalName = name;
+                Project project = projectRepository.findByName(finalName)
+                        .orElseGet(() -> {
+                            Project p = Project.builder()
+                                    .name(finalName)
+                                    .description(description != null ? description : "Project for " + gitRepo)
+                                    .path(path != null ? path : "/repos/" + finalName)
+                                    .build();
+                            return projectRepository.save(p);
+                        });
+
+                Map<String, Object> ingestResult = ingestionService.ingestFromUrl(gitRepo, project.getId());
+
+                String resp = String.format("Successfully created project '%s' (ID: %s) and ingested repository '%s'.\n" +
+                                "Languages: %s\nFrameworks: %s\nFiles parsed: %s\nGraph nodes created: %s",
+                        project.getName(), project.getId(), gitRepo,
+                        ingestResult.getOrDefault("languages", List.of()),
+                        ingestResult.getOrDefault("frameworks", List.of()),
+                        ingestResult.getOrDefault("codeStructureCount", 0),
+                        ingestResult.getOrDefault("graphNodesCreated", 0));
+
+                return new CallToolResult(List.of(new TextContent(resp)), false);
+            } else {
+                String finalName = name;
+                Project project = projectRepository.findByName(finalName)
+                        .orElseGet(() -> {
+                            Project p = Project.builder()
+                                    .name(finalName)
+                                    .description(description)
+                                    .path(path)
+                                    .build();
+                            return projectRepository.save(p);
+                        });
+
+                return new CallToolResult(List.of(new TextContent(
+                        String.format("Successfully created project '%s' with ID: %s (Path: %s)",
+                                project.getName(), project.getId(), project.getPath() != null ? project.getPath() : "N/A"))), false);
+            }
+        } catch (Exception e) {
+            log.error("Failed to create project", e);
+            return new CallToolResult(List.of(new TextContent("Error creating project: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleListProjects() {
+        try {
+            List<Project> projects = projectRepository.findAll();
+            if (projects.isEmpty()) {
+                return new CallToolResult(List.of(new TextContent("No projects currently registered in Second Brain. Use 'brain_create_project' to add one.")), false);
+            }
+
+            StringBuilder sb = new StringBuilder("=== Second Brain Projects ===\n\n");
+            for (Project p : projects) {
+                List<RepositoryEntity> repos = repositoryRepository.findByProjectId(p.getId());
+                List<Task> openTasks = taskRepository.findByStatusAndProjectId(TaskStatus.OPEN, p.getId());
+                sb.append(String.format("📁 Project: %s\n", p.getName()));
+                sb.append(String.format("   ID: %s\n", p.getId()));
+                if (p.getDescription() != null && !p.getDescription().isBlank()) {
+                    sb.append(String.format("   Description: %s\n", p.getDescription()));
+                }
+                if (p.getPath() != null && !p.getPath().isBlank()) {
+                    sb.append(String.format("   Workspace: %s\n", p.getPath()));
+                }
+                sb.append(String.format("   Repositories: %d | Open Tasks: %d\n", repos.size(), openTasks.size()));
+                if (!repos.isEmpty()) {
+                    sb.append("   Linked Repos:\n");
+                    for (RepositoryEntity r : repos) {
+                        sb.append(String.format("     - %s (%s) [%s]\n", r.getName(), r.getPath(), r.getPrimaryLanguage() != null ? r.getPrimaryLanguage() : "unknown"));
+                    }
+                }
+                sb.append("\n");
+            }
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to list projects", e);
+            return new CallToolResult(List.of(new TextContent("Error listing projects: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetProject(String idOrName) {
+        try {
+            if (idOrName == null || idOrName.isBlank()) {
+                return new CallToolResult(List.of(new TextContent("Error: project ID or name is required.")), true);
+            }
+
+            Project project = findProjectByIdOrName(idOrName);
+            if (project == null) {
+                return new CallToolResult(List.of(new TextContent("Project not found: " + idOrName)), true);
+            }
+
+            List<RepositoryEntity> repos = repositoryRepository.findByProjectId(project.getId());
+            List<Task> tasks = taskRepository.findByProjectId(project.getId());
+            List<Decision> decisions = decisionRepository.findByProjectId(project.getId());
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("=== Project: %s ===\n", project.getName()));
+            sb.append(String.format("ID: %s\n", project.getId()));
+            sb.append(String.format("Path: %s\n", project.getPath() != null ? project.getPath() : "N/A"));
+            sb.append(String.format("Description: %s\n\n", project.getDescription() != null ? project.getDescription() : "N/A"));
+
+            sb.append("Repositories (").append(repos.size()).append("):\n");
+            for (RepositoryEntity r : repos) {
+                sb.append(String.format("  • %s (ID: %s) [%s] -> %s\n", r.getName(), r.getId(), r.getPrimaryLanguage(), r.getPath()));
+            }
+
+            sb.append("\nDecisions (").append(decisions.size()).append("):\n");
+            for (Decision d : decisions.stream().limit(5).toList()) {
+                sb.append(String.format("  • [%s] %s: %s\n", d.getStatus(), d.getTitle(), d.getDescription()));
+            }
+
+            sb.append("\nOpen Tasks (").append(tasks.stream().filter(t -> t.getStatus() == TaskStatus.OPEN).count()).append("):\n");
+            for (Task t : tasks.stream().filter(t -> t.getStatus() == TaskStatus.OPEN).limit(5).toList()) {
+                sb.append(String.format("  [ ] %s (Priority: %d)\n", t.getTitle(), t.getPriority()));
+            }
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to get project details", e);
+            return new CallToolResult(List.of(new TextContent("Error retrieving project: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleUseProject(String agentName, String idOrName, String task) {
+        try {
+            if (idOrName == null || idOrName.isBlank()) {
+                return new CallToolResult(List.of(new TextContent("Error: project ID or name is required.")), true);
+            }
+
+            Project project = findProjectByIdOrName(idOrName);
+            if (project == null) {
+                return new CallToolResult(List.of(new TextContent("Project not found: " + idOrName)), true);
+            }
+
+            // Start agent session for this project
+            String resolvedAgent = (agentName != null && !agentName.isBlank()) ? agentName : "ai-agent";
+            Agent agent = agentRepository.findByName(resolvedAgent).orElseGet(() -> {
+                Agent a = Agent.builder().name(resolvedAgent).type(resolvedAgent).build();
+                return agentRepository.save(a);
+            });
+
+            AgentSession session = AgentSession.builder()
+                    .agent(agent)
+                    .project(project)
+                    .task(task != null ? task : "Working on " + project.getName())
+                    .startedAt(LocalDateTime.now())
+                    .status("active")
+                    .build();
+            session = sessionRepository.save(session);
+
+            // Assemble continuity briefing for this project
+            List<RepositoryEntity> repos = repositoryRepository.findByProjectId(project.getId());
+            List<Task> openTasks = taskRepository.findByStatusAndProjectId(TaskStatus.OPEN, project.getId());
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("🎯 ACTIVATED PROJECT: %s (Session ID: %s)\n", project.getName(), session.getId()));
+            sb.append(String.format("Agent '%s' is now focused on project: %s\n", resolvedAgent, project.getName()));
+            sb.append(String.format("Workspace Path: %s\n", project.getPath()));
+            sb.append(String.format("Task Focus: %s\n\n", session.getTask()));
+
+            sb.append("Linked Repositories:\n");
+            for (RepositoryEntity r : repos) {
+                sb.append(String.format("  • %s (%s) [Language: %s]\n", r.getName(), r.getPath(), r.getPrimaryLanguage()));
+            }
+
+            if (!openTasks.isEmpty()) {
+                sb.append("\nOpen Action Items for this Project:\n");
+                for (Task t : openTasks) {
+                    sb.append(String.format("  [ ] %s\n", t.getTitle()));
+                }
+            } else {
+                sb.append("\nNo pending open tasks for this project.\n");
+            }
+
+            sb.append("\nReady to work. Use 'brain_get_context' or 'brain_search' to explore symbols and architecture.");
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
+        } catch (Exception e) {
+            log.error("Failed to activate project", e);
+            return new CallToolResult(List.of(new TextContent("Error activating project: " + e.getMessage())), true);
+        }
+    }
+
+    private Project findProjectByIdOrName(String idOrName) {
+        try {
+            UUID id = UUID.fromString(idOrName);
+            var byId = projectRepository.findById(id);
+            if (byId.isPresent()) return byId.get();
+        } catch (IllegalArgumentException ignored) {}
+
+        return projectRepository.findByName(idOrName).orElse(null);
+    }
 }
