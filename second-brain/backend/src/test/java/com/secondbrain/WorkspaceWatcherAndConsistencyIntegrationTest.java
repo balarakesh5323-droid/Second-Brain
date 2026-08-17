@@ -90,7 +90,7 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
     }
 
     @Test
-    @DisplayName("2. Rich Working Tree State & Status Counts")
+    @DisplayName("2. Rich Working Tree State & Status Counts: clean is null on missing git repo")
     void testWorkingTreeStatus() {
         GitService directGitService = new GitService();
         Map<String, Object> status = directGitService.getWorkingTreeStatus("/tmp/test-project/backend-api");
@@ -100,7 +100,8 @@ public class WorkspaceWatcherAndConsistencyIntegrationTest {
         assertThat(status).containsKey("modifiedCount");
         assertThat(status).containsKey("untrackedCount");
         assertThat(status).containsKey("stagedCount");
-        assertThat(status.get("state")).isIn("CLEAN", "MODIFIED", "UNKNOWN", "MIXED", "STAGED", "UNTRACKED");
+        assertThat(status.get("clean")).isNull();
+        assertThat(status.get("state")).isEqualTo("UNKNOWN");
     }
 
     @Test

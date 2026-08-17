@@ -150,12 +150,17 @@ public class GitService {
     public Map<String, Object> getWorkingTreeStatus(String repoPath) {
         Map<String, Object> statusMap = new HashMap<>();
         statusMap.put("gitAvailable", false);
-        statusMap.put("clean", true);
+        statusMap.put("clean", null);
         statusMap.put("state", "UNKNOWN");
+        statusMap.put("stagedAdded", 0);
+        statusMap.put("stagedChanged", 0);
+        statusMap.put("stagedRemoved", 0);
+        statusMap.put("stagedCount", 0);
+        statusMap.put("unstagedModified", 0);
+        statusMap.put("unstagedMissing", 0);
         statusMap.put("modifiedCount", 0);
         statusMap.put("untrackedCount", 0);
         statusMap.put("addedCount", 0);
-        statusMap.put("stagedCount", 0);
         statusMap.put("removedCount", 0);
         statusMap.put("missingCount", 0);
 
@@ -181,20 +186,24 @@ public class GitService {
                 org.eclipse.jgit.api.Status status = git.status().call();
                 if (status != null) {
                     statusMap.put("gitAvailable", true);
-                    int modified = status.getModified().size() + status.getChanged().size();
+                    int stagedAdded = status.getAdded().size();
+                    int stagedChanged = status.getChanged().size();
+                    int stagedRemoved = status.getRemoved().size();
+                    int stagedCount = stagedAdded + stagedChanged + stagedRemoved;
+
+                    int unstagedModified = status.getModified().size();
+                    int unstagedMissing = status.getMissing().size();
                     int untracked = status.getUntracked().size();
-                    int added = status.getAdded().size();
-                    int removed = status.getRemoved().size();
-                    int missing = status.getMissing().size();
+                    int modifiedTotal = unstagedModified + stagedChanged;
 
                     boolean isClean = status.isClean();
                     String state = "CLEAN";
                     if (!isClean) {
-                        if (added > 0 && (modified > 0 || untracked > 0)) {
+                        if (stagedCount > 0 && (unstagedModified > 0 || untracked > 0)) {
                             state = "MIXED";
-                        } else if (added > 0) {
+                        } else if (stagedCount > 0) {
                             state = "STAGED";
-                        } else if (modified > 0 || missing > 0) {
+                        } else if (unstagedModified > 0 || unstagedMissing > 0) {
                             state = "MODIFIED";
                         } else if (untracked > 0) {
                             state = "UNTRACKED";
@@ -203,16 +212,22 @@ public class GitService {
 
                     statusMap.put("clean", isClean);
                     statusMap.put("state", state);
-                    statusMap.put("modifiedCount", modified);
+                    statusMap.put("stagedAdded", stagedAdded);
+                    statusMap.put("stagedChanged", stagedChanged);
+                    statusMap.put("stagedRemoved", stagedRemoved);
+                    statusMap.put("stagedCount", stagedCount);
+                    statusMap.put("unstagedModified", unstagedModified);
+                    statusMap.put("unstagedMissing", unstagedMissing);
+                    statusMap.put("modifiedCount", modifiedTotal);
                     statusMap.put("untrackedCount", untracked);
-                    statusMap.put("addedCount", added);
-                    statusMap.put("stagedCount", added);
-                    statusMap.put("removedCount", removed);
-                    statusMap.put("missingCount", missing);
+                    statusMap.put("addedCount", stagedAdded);
+                    statusMap.put("removedCount", stagedRemoved);
+                    statusMap.put("missingCount", unstagedMissing);
                 }
             }
         } catch (Throwable t) {
             statusMap.put("gitAvailable", false);
+            statusMap.put("clean", null);
             statusMap.put("state", "UNKNOWN");
             statusMap.put("error", t.getMessage());
         }
