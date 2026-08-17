@@ -74,7 +74,7 @@
 - [x] 10.3 Memory decay
 - [x] 10.4 Knowledge evolution
 - [x] 10.5 Skill evolution
-- [ ] 10.6 CLI tool (future)
+- [x] 10.6 CLI tool (init, watch, search, ask, remember, context, status, handoff)
 - [x] 10.7 Kubernetes manifests
 - [ ] 10.8 Observability (OpenTelemetry, Prometheus, Grafana) (future)
 - [x] 10.9 Security (auth, API keys, redaction)

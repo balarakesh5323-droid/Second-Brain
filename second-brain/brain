@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Second Brain CLI launcher script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR_PATH="$SCRIPT_DIR/cli/build/libs/brain-cli.jar"
+
+if [ ! -f "$JAR_PATH" ]; then
+    (cd "$SCRIPT_DIR" && ./gradlew :cli:bootJar -q)
+fi
+
+exec java -jar "$JAR_PATH" "$@"

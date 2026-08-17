@@ -27,29 +27,41 @@ import picocli.CommandLine.Parameters;
         BrainCli.HandoffCommand.class
     }
 )
-public class BrainCli implements CommandLineRunner {
+public class BrainCli implements CommandLineRunner, Runnable {
 
     @Option(names = {"-s", "--server"}, description = "Second Brain server URL", defaultValue = "http://localhost:8080")
     private String serverUrl;
 
+    public static void main(String[] args) {
+        int exitCode = new CommandLine(new BrainCli()).execute(args);
+        System.exit(exitCode);
+    }
+
+    @Override
+    public void run() {
+        System.out.println("Second Brain CLI v1.0.0");
+        System.out.println("Use 'brain <command> --help' for available commands.");
+        System.out.println();
+        System.out.println("Available commands:");
+        System.out.println("  init       Initialize brain for a repository (detect language, frameworks, DBs)");
+        System.out.println("  watch      Watch directory for changes and index them");
+        System.out.println("  search     Search memories by keyword");
+        System.out.println("  ask        Ask a natural language question");
+        System.out.println("  remember   Store a new memory");
+        System.out.println("  projects   List all projects");
+        System.out.println("  tasks      List open tasks");
+        System.out.println("  decisions  List recent decisions");
+        System.out.println("  context    Assemble full context for a query");
+        System.out.println("  status     Check brain health status");
+        System.out.println("  handoff    Get latest agent handoff");
+    }
+
     @Override
     public void run(String... args) throws Exception {
-        if (args.length == 0) {
-            System.out.println("Second Brain CLI v1.0.0");
-            System.out.println("Use 'brain <command> --help' for available commands.");
-            System.out.println();
-            System.out.println("Available commands:");
-            System.out.println("  init       Initialize brain for a repository (detect language, frameworks, DBs)");
-            System.out.println("  watch      Watch directory for changes and index them");
-            System.out.println("  search     Search memories by keyword");
-            System.out.println("  ask        Ask a natural language question");
-            System.out.println("  remember   Store a new memory");
-            System.out.println("  projects   List all projects");
-            System.out.println("  tasks      List open tasks");
-            System.out.println("  decisions  List recent decisions");
-            System.out.println("  context    Assemble full context for a query");
-            System.out.println("  status     Check brain health status");
-            System.out.println("  handoff    Get latest agent handoff");
+        if (args.length > 0) {
+            new CommandLine(this).execute(args);
+        } else {
+            run();
         }
     }
 
