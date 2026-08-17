@@ -435,12 +435,12 @@ public class GraphService {
                     """, Map.of("sessionId", sessionId, "repoId", repoId));
             }
 
-            // 3. Touched Files
+            // 3. Touched Files (Strictly match existing File nodes, do not manufacture phantom files)
             if (touchedFileIds != null) {
                 for (String fId : touchedFileIds) {
                     session.run("""
                         MATCH (s:AgentSession {id: $sessionId})
-                        MERGE (f:File {id: $fileId})
+                        MATCH (f:File {id: $fileId})
                         MERGE (s)-[:TOUCHED]->(f)
                         """, Map.of("sessionId", sessionId, "fileId", fId));
                 }
@@ -538,36 +538,63 @@ public class GraphService {
             log.info("🧠 Agent Activity Memory: Recorded graph for agent '{}' on session '{}'", agentName, sessionId);
         } catch (Exception e) {
             log.error("Failed recording agent activity graph for session {}: {}", sessionId, e.getMessage());
+            throw new IllegalStateException("Failed recording agent activity graph for session " + sessionId, e);
         }
     }
 
     public List<Map<String, Object>> getAgentTimeline(String repoId, int limit) {
+        int safeLimit = Math.min(Math.max(limit > 0 ? limit : 20, 1), 100);
         try (var session = driver.session()) {
             String cypher = """
                 MATCH (a:Agent)-[:STARTED]->(s:AgentSession)
                 OPTIONAL MATCH (s)-[:WORKED_ON]->(r:Repository)
-                OPTIONAL MATCH (s)-[:MADE]->(d:Decision)
-                OPTIONAL MATCH (s)-[:ENCOUNTERED]->(p:Problem)
-                OPTIONAL MATCH (s)-[:TRIED_AND_FAILED]->(fa:FailedAttempt)
-                OPTIONAL MATCH (s)-[:PRODUCED]->(c:Commit)
-                OPTIONAL MATCH (s)-[:CREATED]->(h:AgentHandoff)
-                WHERE ($repoId IS NULL OR r.id = $repoId OR r.name = $repoId)
+                WHERE ($repoId IS NULL OR $repoId = '' OR r.id = $repoId OR r.name = $repoId)
+                CALL {
+                    WITH s
+                    OPTIONAL MATCH (s)-[:MADE]->(d:Decision)
+                    RETURN collect(DISTINCT d.title) AS decisions
+                }
+                CALL {
+                    WITH s
+                    OPTIONAL MATCH (s)-[:ENCOUNTERED]->(p:Problem)
+                    RETURN collect(DISTINCT p.title) AS problems
+                }
+                CALL {
+                    WITH s
+                    OPTIONAL MATCH (s)-[:TRIED_AND_FAILED]->(fa:FailedAttempt)
+                    RETURN collect(DISTINCT fa.approach) AS failedAttempts
+                }
+                CALL {
+                    WITH s
+                    OPTIONAL MATCH (s)-[:PRODUCED]->(c:Commit)
+                    RETURN collect(DISTINCT c.id) AS commits
+                }
+                CALL {
+                    WITH s
+                    OPTIONAL MATCH (s)-[:CREATED]->(h:AgentHandoff)
+                    RETURN head(collect(DISTINCT h.nextSteps)) AS nextSteps
+                }
                 RETURN a.name AS agentName,
                        a.type AS agentType,
                        s.id AS sessionId,
                        s.summary AS summary,
                        s.startedAt AS startedAt,
+                       s.endedAt AS endedAt,
                        s.status AS status,
-                       collect(DISTINCT d.title) AS decisions,
-                       collect(DISTINCT p.title) AS problems,
-                       collect(DISTINCT fa.approach) AS failedAttempts,
-                       collect(DISTINCT c.id) AS commits,
-                       h.nextSteps AS nextSteps
+                       decisions,
+                       problems,
+                       failedAttempts,
+                       commits,
+                       nextSteps
                 ORDER BY s.startedAt DESC
                 LIMIT $limit
                 """;
 
-            var result = session.run(cypher, Map.of("repoId", repoId != null ? repoId : "", "limit", limit > 0 ? limit : 20));
+            Map<String, Object> params = new HashMap<>();
+            params.put("repoId", (repoId != null && !repoId.isBlank()) ? repoId : null);
+            params.put("limit", safeLimit);
+
+            var result = session.run(cypher, params);
             List<Map<String, Object>> timeline = new ArrayList<>();
             while (result.hasNext()) {
                 var record = result.next();
@@ -577,6 +604,7 @@ public class GraphService {
                 item.put("sessionId", record.get("sessionId").asString(""));
                 item.put("summary", record.get("summary").asString(""));
                 item.put("startedAt", record.get("startedAt").asString(""));
+                item.put("endedAt", record.get("endedAt").asString(""));
                 item.put("status", record.get("status").asString("COMPLETED"));
                 item.put("decisions", record.get("decisions").asList(v -> v.asString()));
                 item.put("problems", record.get("problems").asList(v -> v.asString()));

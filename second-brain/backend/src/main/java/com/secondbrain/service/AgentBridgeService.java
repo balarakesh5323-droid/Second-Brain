@@ -618,6 +618,8 @@ public class AgentBridgeService {
         private String headCommit;
         private String taskSummary;
         private String status; // "IN_PROGRESS", "COMPLETED", "FAILED"
+        private LocalDateTime startedAt;
+        private LocalDateTime endedAt;
         private List<String> touchedFiles;
         private List<Map<String, Object>> problems;
         private List<Map<String, Object>> decisions;
@@ -651,20 +653,27 @@ public class AgentBridgeService {
         RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
         Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
 
-        // 3. Create Persistent JPA AgentSession
+        // 3. Create Persistent JPA AgentSession with accurate lifecycle
+        LocalDateTime startedAt = payload.getStartedAt() != null ? payload.getStartedAt() : LocalDateTime.now();
+        String sessionStatus = payload.getStatus() != null ? payload.getStatus() : "completed";
+        LocalDateTime endedAt = ("completed".equalsIgnoreCase(sessionStatus) || "failed".equalsIgnoreCase(sessionStatus))
+                ? (payload.getEndedAt() != null ? payload.getEndedAt() : LocalDateTime.now()) : null;
+
         AgentSession session = AgentSession.builder()
                 .agent(agent)
                 .repository(repo)
                 .project(project)
                 .task(payload.getTaskSummary() != null ? payload.getTaskSummary() : "Autonomous Agent Session")
-                .status(payload.getStatus() != null ? payload.getStatus() : "completed")
+                .status(sessionStatus)
                 .summary(payload.getTaskSummary() != null ? payload.getTaskSummary() : "Autonomous Agent Session")
-                .startedAt(LocalDateTime.now())
-                .endedAt(LocalDateTime.now())
+                .startedAt(startedAt)
+                .endedAt(endedAt)
                 .build();
         session = sessionRepository.save(session);
+        UUID sessionId = session.getId();
 
-        // 4. Record Handoff in JPA if provided
+        // 4. Record Handoff in JPA and Graph with canonical ID
+        Map<String, Object> handoffGraphProps = null;
         if (payload.getHandoff() != null && !payload.getHandoff().isEmpty()) {
             Map<String, Object> h = payload.getHandoff();
             AgentHandoff handoff = AgentHandoff.builder()
@@ -679,10 +688,14 @@ public class AgentBridgeService {
                     .nextSteps((String) h.getOrDefault("nextSteps", ""))
                     .changedFiles(payload.getTouchedFiles() != null ? String.join(", ", payload.getTouchedFiles()) : "")
                     .build();
-            handoffRepository.save(handoff);
+            handoff = handoffRepository.save(handoff);
+
+            handoffGraphProps = new HashMap<>(h);
+            handoffGraphProps.put("id", "handoff::" + handoff.getId().toString());
         }
 
-        // 5. Record Failed Attempts & Lessons Learned
+        // 5. Record Failed Attempts & Lessons Learned with canonical IDs across JPA, Qdrant, and Neo4j
+        List<Map<String, Object>> failedAttemptsGraph = new ArrayList<>();
         if (payload.getFailedAttempts() != null) {
             for (Map<String, Object> fa : payload.getFailedAttempts()) {
                 AgentAttempt attempt = AgentAttempt.builder()
@@ -697,16 +710,21 @@ public class AgentBridgeService {
                         .project(project)
                         .filesChanged(payload.getTouchedFiles() != null ? payload.getTouchedFiles() : new ArrayList<>())
                         .build();
-                attemptRepository.save(attempt);
+                attempt = attemptRepository.save(attempt);
+                String canonicalFailId = "fail::" + attempt.getId().toString();
 
-                // Vectorize failed lesson into Qdrant for semantic recall
+                Map<String, Object> faGraph = new HashMap<>(fa);
+                faGraph.put("id", canonicalFailId);
+                failedAttemptsGraph.add(faGraph);
+
+                // Vectorize failed lesson into Qdrant using canonical point ID
                 try {
                     String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
                             agentName, repo != null ? repo.getName() : "repo",
                             fa.get("approach"), fa.get("errorMessage"), fa.get("lessonLearned"));
                     float[] vec = embeddingService.embed(doc);
                     if (vec != null) {
-                        String pointId = UUID.randomUUID().toString();
+                        String pointId = attempt.getId().toString();
                         Map<String, String> p = new HashMap<>();
                         p.put("agentName", agentName);
                         p.put("type", "failed_attempt");
@@ -718,7 +736,8 @@ public class AgentBridgeService {
             }
         }
 
-        // 6. Record Decisions into JPA & Vector Store
+        // 6. Record Decisions into JPA & Vector Store with canonical IDs
+        List<Map<String, Object>> decisionsGraph = new ArrayList<>();
         if (payload.getDecisions() != null) {
             for (Map<String, Object> d : payload.getDecisions()) {
                 Decision decision = Decision.builder()
@@ -728,15 +747,20 @@ public class AgentBridgeService {
                         .repository(repo)
                         .status("approved")
                         .build();
-                decisionRepository.save(decision);
+                decision = decisionRepository.save(decision);
+                String canonicalDecId = "dec::" + decision.getId().toString();
 
-                // Vectorize decision into Qdrant decision_memory
+                Map<String, Object> decGraph = new HashMap<>(d);
+                decGraph.put("id", canonicalDecId);
+                decisionsGraph.add(decGraph);
+
+                // Vectorize decision into Qdrant using canonical point ID
                 try {
                     String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
                             decision.getTitle(), decision.getTitle(), decision.getRationale());
                     float[] vec = embeddingService.embed(doc);
                     if (vec != null) {
-                        String pointId = UUID.randomUUID().toString();
+                        String pointId = decision.getId().toString();
                         Map<String, String> p = new HashMap<>();
                         p.put("title", decision.getTitle());
                         p.put("doc", doc);
@@ -751,28 +775,29 @@ public class AgentBridgeService {
         String repoIdStr = repo != null ? repo.getId().toString() : "";
         Map<String, Object> sessionProps = new HashMap<>();
         sessionProps.put("summary", payload.getTaskSummary() != null ? payload.getTaskSummary() : "");
-        sessionProps.put("status", payload.getStatus() != null ? payload.getStatus() : "COMPLETED");
-        sessionProps.put("startedAt", session.getStartedAt().toString());
+        sessionProps.put("status", sessionStatus);
+        sessionProps.put("startedAt", startedAt.toString());
+        if (endedAt != null) sessionProps.put("endedAt", endedAt.toString());
         sessionProps.put("branch", payload.getBranch() != null ? payload.getBranch() : "main");
         sessionProps.put("headCommit", payload.getHeadCommit() != null ? payload.getHeadCommit() : "uncommitted");
 
         graphService.recordAgentSessionGraph(
                 agentName,
                 agentType,
-                session.getId().toString(),
+                sessionId.toString(),
                 sessionProps,
                 repoIdStr,
                 payload.getTouchedFiles(),
                 payload.getProblems(),
-                payload.getDecisions(),
-                payload.getFailedAttempts(),
+                decisionsGraph,
+                failedAttemptsGraph,
                 payload.getCommits(),
-                payload.getHandoff()
+                handoffGraphProps
         );
 
         Map<String, Object> res = new HashMap<>();
         res.put("status", "success");
-        res.put("sessionId", session.getId());
+        res.put("sessionId", sessionId);
         res.put("agent", agentName);
         res.put("summary", payload.getTaskSummary());
         return res;
