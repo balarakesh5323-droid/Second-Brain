@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:headed": "npx playwright test --headed",
+    "test:report": "npx playwright show-report"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
@@ -18,6 +22,7 @@
     "react-router-dom": "^6.30.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
