@@ -291,7 +291,50 @@ export default function HandoffsView() {
         </div>
 
         {/* Detailed Handoff Inspector */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-6">
+          {/* Swarm Timeline & Continuity Visual Flow */}
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                <ArrowRightLeft className="w-3.5 h-3.5 text-purple-400" />
+                Multi-Agent Swarm Handoff Timeline
+              </span>
+              <span className="text-xs text-purple-400 bg-purple-950/60 px-2.5 py-0.5 rounded-full border border-purple-800/50">
+                Autonomous Continuity
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto py-2">
+              <div className="flex items-center gap-2 bg-indigo-950/50 border border-indigo-700/60 px-3 py-2 rounded-xl text-xs flex-shrink-0">
+                <Bot className="w-4 h-4 text-indigo-400" />
+                <div>
+                  <p className="font-bold text-gray-100">Antigravity</p>
+                  <p className="text-[10px] text-indigo-300">Architecture &amp; Planning</p>
+                </div>
+              </div>
+
+              <span className="text-purple-400 font-bold">➔</span>
+
+              <div className="flex items-center gap-2 bg-purple-950/50 border border-purple-700/60 px-3 py-2 rounded-xl text-xs flex-shrink-0">
+                <Bot className="w-4 h-4 text-purple-400" />
+                <div>
+                  <p className="font-bold text-gray-100">Claude Code</p>
+                  <p className="text-[10px] text-purple-300">Implementation</p>
+                </div>
+              </div>
+
+              <span className="text-purple-400 font-bold">➔</span>
+
+              <div className="flex items-center gap-2 bg-cyan-950/50 border border-cyan-700/60 px-3 py-2 rounded-xl text-xs flex-shrink-0">
+                <Bot className="w-4 h-4 text-cyan-400" />
+                <div>
+                  <p className="font-bold text-gray-100">Codex / OpenCode</p>
+                  <p className="text-[10px] text-cyan-300">Verification &amp; Tests</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {latestLoading ? (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500">
               Loading handoff details...

@@ -43,6 +43,9 @@ public class BrainToolHandler {
     private final RetrievalQualityService retrievalQualityService;
     private final RepositoryIngestionService ingestionService;
     private final GitHubCloneService gitHubCloneService;
+    private final com.secondbrain.service.ImpactAnalysisService impactAnalysisService;
+    private final com.secondbrain.service.CodeReviewService codeReviewService;
+    private final com.secondbrain.service.DiagramIngestionService diagramIngestionService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -851,6 +854,44 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Failed to activate project", e);
             return new CallToolResult(List.of(new TextContent("Error activating project: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleImpactAnalysis(String filePath, String diff, String projectId) {
+        try {
+            UUID projId = (projectId != null && !projectId.isBlank()) ? UUID.fromString(projectId) : null;
+            Map<String, Object> analysis = impactAnalysisService.analyzeImpact(filePath, diff, projId);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(analysis);
+            return new CallToolResult(List.of(new TextContent("=== Architectural & Call-Graph Impact Report ===\n\n" + json)), false);
+        } catch (Exception e) {
+            log.error("Impact analysis failed", e);
+            return new CallToolResult(List.of(new TextContent("Error performing impact analysis: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleReviewChanges(String diff, String projectId, String repositoryId) {
+        try {
+            UUID projId = (projectId != null && !projectId.isBlank()) ? UUID.fromString(projectId) : null;
+            UUID repoId = (repositoryId != null && !repositoryId.isBlank()) ? UUID.fromString(repositoryId) : null;
+            Map<String, Object> review = codeReviewService.reviewChanges(diff, projId, repoId);
+            String report = (String) review.getOrDefault("markdownReport", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(review));
+            return new CallToolResult(List.of(new TextContent(report)), false);
+        } catch (Exception e) {
+            log.error("Code review failed", e);
+            return new CallToolResult(List.of(new TextContent("Error reviewing changes: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleIngestDiagram(String diagramText, String format, String projectId) {
+        try {
+            UUID projId = (projectId != null && !projectId.isBlank()) ? UUID.fromString(projectId) : null;
+            Map<String, Object> res = diagramIngestionService.ingestDiagram(diagramText, format != null ? format : "mermaid", projId);
+            return new CallToolResult(List.of(new TextContent(
+                    String.format("Diagram Ingestion Complete!\nCreated %s nodes and %s relationships in Knowledge Graph.",
+                            res.getOrDefault("nodesCount", 0), res.getOrDefault("relationshipsCount", 0)))), false);
+        } catch (Exception e) {
+            log.error("Diagram ingestion failed", e);
+            return new CallToolResult(List.of(new TextContent("Error ingesting diagram: " + e.getMessage())), true);
         }
     }
 

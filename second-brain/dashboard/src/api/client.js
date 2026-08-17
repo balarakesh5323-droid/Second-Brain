@@ -85,6 +85,18 @@ export const brainApi = {
   recordAgentAttempt: (data) => api.post('/bridge/attempts', data).then(r => r.data),
   getContinuityState: (repo) => api.get(`/bridge/continuity?repo=${encodeURIComponent(repo || '')}`).then(r => r.data || {}).catch(() => ({})),
 
+  // Workspace Files & Sandbox
+  getProjectFiles: (id) => safeArray(api.get(`/projects/${id}/files`)),
+
+  // Architecture & Intel
+  analyzeImpact: (data) => api.post('/intel/impact-analysis', data).then(r => r.data || {}),
+  reviewChanges: (data) => api.post('/intel/review', data).then(r => r.data || {}),
+  ingestDiagram: (data) => api.post('/intel/ingest-diagram', data).then(r => r.data || {}),
+
+  // Backup & Snapshots
+  exportBackup: () => api.get('/intel/backup/export').then(r => r.data || {}),
+  importBackup: (data) => api.post('/intel/backup/import', data).then(r => r.data || {}),
+
   // Health
   getHealth: () => api.get('/actuator/health').then(r => r.data || {}).catch(() => ({ status: 'UNKNOWN' })),
 };

@@ -405,6 +405,48 @@ public class SecondBrainMcpServer {
                     String agent = (String) args.get("agent_name");
                     String task = (String) args.get("task");
                     return toolHandler.handleUseProject(agent, project, task);
+                }),
+
+            buildTool("brain_impact_analysis",
+                "Analyze breaking change risks, affected downstream call sites in Neo4j, and architectural drift against project decisions.",
+                "object", Map.of(
+                    "file_path", Map.of("type", "string", "description", "Path of the file modified"),
+                    "diff_or_code", Map.of("type", "string", "description", "Code diff or modified function body"),
+                    "project_id", Map.of("type", "string", "description", "Optional project UUID")
+                ), List.of("diff_or_code"),
+                (exchange, args) -> {
+                    String filePath = (String) args.get("file_path");
+                    String diff = (String) args.get("diff_or_code");
+                    String projectId = (String) args.get("project_id");
+                    return toolHandler.handleImpactAnalysis(filePath, diff, projectId);
+                }),
+
+            buildTool("brain_review_changes",
+                "Graph-augmented AI code review cross-referencing past trial failures, regressions, test coverage, and decision compliance.",
+                "object", Map.of(
+                    "working_tree_diff", Map.of("type", "string", "description", "Git diff of the current working tree"),
+                    "project_id", Map.of("type", "string", "description", "Optional project UUID"),
+                    "repository_id", Map.of("type", "string", "description", "Optional repository UUID")
+                ), List.of("working_tree_diff"),
+                (exchange, args) -> {
+                    String diff = (String) args.get("working_tree_diff");
+                    String projectId = (String) args.get("project_id");
+                    String repoId = (String) args.get("repository_id");
+                    return toolHandler.handleReviewChanges(diff, projectId, repoId);
+                }),
+
+            buildTool("brain_ingest_diagram",
+                "Parse Mermaid, PlantUML, or C4 architecture diagrams into Neo4j graph nodes and relationships.",
+                "object", Map.of(
+                    "diagram_text", Map.of("type", "string", "description", "Mermaid or PlantUML diagram text"),
+                    "format", Map.of("type", "string", "description", "Diagram format (default 'mermaid')"),
+                    "project_id", Map.of("type", "string", "description", "Optional project UUID")
+                ), List.of("diagram_text"),
+                (exchange, args) -> {
+                    String diagram = (String) args.get("diagram_text");
+                    String format = (String) args.get("format");
+                    String projectId = (String) args.get("project_id");
+                    return toolHandler.handleIngestDiagram(diagram, format, projectId);
                 })
         );
     }

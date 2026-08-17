@@ -140,6 +140,9 @@ When completing your turn or switching tasks:
 | **Search Code Symbols** | `brain_search(query, collection="code_symbols")` | `GET /api/v1/memory/symbols?q=...` |
 | **Search Documentation** | `brain_search(query, collection="documentation")` | `GET /api/v1/documents` |
 | **Query Knowledge Graph** | `brain_knowledge_graph(label, id, depth)` | `GET /api/v1/graph/visual` |
+| **Breaking Change Impact Analysis** | `brain_impact_analysis(file_path, diff)` | `POST /api/v1/intel/impact-analysis` |
+| **Graph-Augmented Code Review** | `brain_review_changes(working_tree_diff)` | `POST /api/v1/intel/review` |
+| **Ingest Architecture Diagram** | `brain_ingest_diagram(diagram_text)` | `POST /api/v1/intel/ingest-diagram` |
 | **Save Learned Memory** | `brain_store_memory(content, type, scope)` | `POST /api/v1/memory` |
 | **Record Tech Decision** | `brain_record_decision(title, rationale)` | `POST /api/v1/decisions` |
 | **Create Agent Handoff** | `brain_create_handoff(from, to, summary)` | `POST /api/v1/handoffs` |

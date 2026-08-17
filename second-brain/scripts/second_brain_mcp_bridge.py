@@ -164,6 +164,45 @@ TOOLS = [
         }
     },
     {
+        "name": "brain_impact_analysis",
+        "description": "Analyze breaking change risks, affected downstream call sites in Neo4j, and architectural drift against project decisions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Path of the file modified"},
+                "diff_or_code": {"type": "string", "description": "Code diff or modified function body"},
+                "project_id": {"type": "string", "description": "Optional project UUID"}
+            },
+            "required": ["diff_or_code"]
+        }
+    },
+    {
+        "name": "brain_review_changes",
+        "description": "Graph-augmented AI code review cross-referencing past trial failures, regressions, test coverage, and decision compliance.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "working_tree_diff": {"type": "string", "description": "Git diff of the current working tree"},
+                "project_id": {"type": "string", "description": "Optional project UUID"},
+                "repository_id": {"type": "string", "description": "Optional repository UUID"}
+            },
+            "required": ["working_tree_diff"]
+        }
+    },
+    {
+        "name": "brain_ingest_diagram",
+        "description": "Parse Mermaid, PlantUML, or C4 architecture diagrams into Neo4j graph nodes and relationships.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "diagram_text": {"type": "string", "description": "Mermaid or PlantUML diagram text"},
+                "format": {"type": "string", "description": "Diagram format (default 'mermaid')"},
+                "project_id": {"type": "string", "description": "Optional project UUID"}
+            },
+            "required": ["diagram_text"]
+        }
+    },
+    {
         "name": "brain_doctor",
         "description": "Check Second Brain system health, vector database, graph store, and background worker status.",
         "inputSchema": {
@@ -308,7 +347,32 @@ def handle_tool_call(name, args):
                 "projectId": matched.get("id")
             })
             return f"🎯 ACTIVATED PROJECT: {matched.get('name')}\nSession: {sess.get('id', 'OK')}\nAgent: {agent}\nTask: {task}\nWorkspace: {matched.get('path', 'N/A')}"
-        return f"Could not find project: {proj}"
+    elif name == "brain_impact_analysis":
+        payload = {
+            "filePath": args.get("file_path", ""),
+            "diff": args.get("diff_or_code", ""),
+            "projectId": args.get("project_id", "")
+        }
+        res = make_http_request("/api/v1/intel/impact-analysis", method="POST", data=payload)
+        return json.dumps(res, indent=2)
+
+    elif name == "brain_review_changes":
+        payload = {
+            "diff": args.get("working_tree_diff", ""),
+            "projectId": args.get("project_id", ""),
+            "repositoryId": args.get("repository_id", "")
+        }
+        res = make_http_request("/api/v1/intel/review", method="POST", data=payload)
+        return res.get("markdownReport", json.dumps(res, indent=2))
+
+    elif name == "brain_ingest_diagram":
+        payload = {
+            "diagram": args.get("diagram_text", ""),
+            "format": args.get("format", "mermaid"),
+            "projectId": args.get("project_id", "")
+        }
+        res = make_http_request("/api/v1/intel/ingest-diagram", method="POST", data=payload)
+        return json.dumps(res, indent=2)
 
     elif name == "brain_doctor":
         health = make_http_request("/actuator/health")

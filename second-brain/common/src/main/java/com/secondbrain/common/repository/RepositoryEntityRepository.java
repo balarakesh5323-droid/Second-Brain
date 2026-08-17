@@ -4,6 +4,7 @@ import com.secondbrain.common.entity.RepositoryEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -12,4 +13,5 @@ public interface RepositoryEntityRepository extends JpaRepository<RepositoryEnti
     Optional<RepositoryEntity> findByUrl(String url);
     Optional<RepositoryEntity> findByName(String name);
     Optional<RepositoryEntity> findByPath(String path);
+    List<RepositoryEntity> findByProjectId(UUID projectId);
 }
