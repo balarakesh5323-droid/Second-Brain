@@ -309,6 +309,24 @@ public class GraphService {
         }
     }
 
+    public List<Map<String, String>> findFilesByPrefix(String prefix) {
+        try (var session = driver.session()) {
+            var result = session.run("MATCH (f:File) WHERE f.id STARTS WITH $prefix RETURN f.id AS id, f.path AS path", Map.of("prefix", prefix));
+            List<Map<String, String>> files = new ArrayList<>();
+            while (result.hasNext()) {
+                var record = result.next();
+                files.add(Map.of(
+                        "id", record.get("id").asString(),
+                        "path", record.get("path").asString("")
+                ));
+            }
+            return files;
+        } catch (Exception e) {
+            log.error("Failed to find files by prefix {}: {}", prefix, e.getMessage());
+            return List.of();
+        }
+    }
+
     public void wipeAll() {
         try (var session = driver.session()) {
             session.run("MATCH (n) DETACH DELETE n");

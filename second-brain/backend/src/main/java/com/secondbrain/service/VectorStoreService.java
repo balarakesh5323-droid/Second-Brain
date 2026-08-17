@@ -103,15 +103,28 @@ public class VectorStoreService {
     }
 
     public List<Map<String, Object>> search(String collectionName, float[] vector, int limit) {
+        return searchWithFilter(collectionName, vector, Map.of(), limit);
+    }
+
+    public List<Map<String, Object>> searchWithFilter(String collectionName, float[] vector, Map<String, String> mustFilters, int limit) {
+        if (vector == null) return List.of();
         try {
-            List<Points.ScoredPoint> points = qdrantClient.searchAsync(
-                Points.SearchPoints.newBuilder()
+            Points.SearchPoints.Builder searchBuilder = Points.SearchPoints.newBuilder()
                     .setCollectionName(collectionName)
                     .addAllVector(toFloatList(vector))
-                    .setLimit(limit)
-                    .build()
-            ).get();
+                    .setLimit(limit);
 
+            if (mustFilters != null && !mustFilters.isEmpty()) {
+                io.qdrant.client.grpc.Common.Filter.Builder filterBuilder = io.qdrant.client.grpc.Common.Filter.newBuilder();
+                for (Map.Entry<String, String> entry : mustFilters.entrySet()) {
+                    if (entry.getValue() != null && !entry.getValue().isBlank()) {
+                        filterBuilder.addMust(io.qdrant.client.ConditionFactory.matchKeyword(entry.getKey(), entry.getValue()));
+                    }
+                }
+                searchBuilder.setFilter(filterBuilder.build());
+            }
+
+            List<Points.ScoredPoint> points = qdrantClient.searchAsync(searchBuilder.build()).get();
             List<Map<String, Object>> results = new ArrayList<>();
             for (Points.ScoredPoint point : points) {
                 Map<String, Object> result = new HashMap<>();
@@ -122,7 +135,7 @@ public class VectorStoreService {
             }
             return results;
         } catch (InterruptedException | ExecutionException e) {
-            log.error("Failed to search collection {}: {}", collectionName, e.getMessage());
+            log.error("Failed native filtered search on collection {}: {}", collectionName, e.getMessage());
             Thread.currentThread().interrupt();
             return List.of();
         }
@@ -138,6 +151,18 @@ public class VectorStoreService {
         } catch (InterruptedException | ExecutionException e) {
             log.error("Failed to delete point {} from collection {}: {}", id, collectionName, e.getMessage());
             Thread.currentThread().interrupt();
+        }
+    }
+
+    public void deleteByFile(String collectionName, String fileId) {
+        try {
+            io.qdrant.client.grpc.Common.Filter filter = io.qdrant.client.grpc.Common.Filter.newBuilder()
+                    .addMust(io.qdrant.client.ConditionFactory.matchKeyword("fileId", fileId))
+                    .build();
+            qdrantClient.deleteAsync(collectionName, filter).get();
+            log.info("Deleted Qdrant vector points for fileId '{}' in collection '{}'", fileId, collectionName);
+        } catch (Exception e) {
+            log.debug("Non-fatal vector delete by fileId on {}: {}", collectionName, e.getMessage());
         }
     }
 

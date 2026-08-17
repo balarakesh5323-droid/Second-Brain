@@ -98,7 +98,6 @@ public class RepositoryIndexingService {
                     }
                     return true;
                 })
-                .limit(5000)
                 .forEach(path -> {
                     try {
                         String content = Files.readString(path);

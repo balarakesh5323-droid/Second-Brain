@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -25,7 +26,17 @@ public class SemanticSearchService {
         float[] queryVector = embeddingService.embed(query);
         if (queryVector == null) return List.of();
 
-        List<Map<String, Object>> points = vectorStoreService.search(collectionName, queryVector, limit * 2);
+        // Native Qdrant filter pushdown: filters vectors before top-K distance scoring
+        Map<String, String> mustFilters = new HashMap<>();
+        if (!"global_knowledge".equalsIgnoreCase(collectionName)) {
+            if (repositoryId != null && !repositoryId.isBlank()) {
+                mustFilters.put("repositoryId", repositoryId);
+            } else if (projectId != null && !projectId.isBlank()) {
+                mustFilters.put("projectId", projectId);
+            }
+        }
+
+        List<Map<String, Object>> points = vectorStoreService.searchWithFilter(collectionName, queryVector, mustFilters, limit);
         return points.stream()
             .map(point -> {
                 @SuppressWarnings("unchecked")
@@ -39,22 +50,6 @@ public class SemanticSearchService {
                     .payload(payload != null ? payload : Map.of())
                     .build();
             })
-            .filter(sr -> {
-                if (projectId == null && repositoryId == null) return true;
-                Map<String, Object> p = sr.getPayload();
-                if (p == null) return true;
-                String pointProj = String.valueOf(p.getOrDefault("projectId", p.getOrDefault("project", "")));
-                String pointRepo = String.valueOf(p.getOrDefault("repositoryId", p.getOrDefault("repository", "")));
-
-                if (projectId != null && !pointProj.isBlank() && !"global".equalsIgnoreCase(pointProj) && !pointProj.equalsIgnoreCase(projectId)) {
-                    return false;
-                }
-                if (repositoryId != null && !pointRepo.isBlank() && !"global".equalsIgnoreCase(pointRepo) && !pointRepo.equalsIgnoreCase(repositoryId)) {
-                    return false;
-                }
-                return true;
-            })
-            .limit(limit)
             .toList();
     }
 

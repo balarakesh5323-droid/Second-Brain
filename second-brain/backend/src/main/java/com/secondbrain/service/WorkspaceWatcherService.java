@@ -1,7 +1,9 @@
 package com.secondbrain.service;
 
 import com.secondbrain.common.entity.Project;
+import com.secondbrain.common.entity.RepositoryEntity;
 import com.secondbrain.common.repository.ProjectRepository;
+import com.secondbrain.common.repository.RepositoryEntityRepository;
 import com.secondbrain.parser.LanguageParserFactory;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -10,7 +12,6 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -23,15 +24,19 @@ import java.util.concurrent.*;
 public class WorkspaceWatcherService {
 
     private final ProjectRepository projectRepository;
+    private final RepositoryEntityRepository repositoryRepository;
     private final GraphService graphService;
     private final LanguageParserFactory languageParserFactory;
     private final VectorStoreService vectorStoreService;
     private final EmbeddingService embeddingService;
+    private final GitService gitService;
 
     private WatchService watchService;
     private final Map<WatchKey, Path> keyToPath = new ConcurrentHashMap<>();
     private final Map<Path, UUID> pathToProjectId = new ConcurrentHashMap<>();
+    private final Map<Path, UUID> pathToRepositoryId = new ConcurrentHashMap<>();
     private final Map<String, Long> debounceMap = new ConcurrentHashMap<>();
+    private final Map<String, Long> fileWriteVersions = new ConcurrentHashMap<>();
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "workspace-file-watcher");
@@ -58,7 +63,15 @@ public class WorkspaceWatcherService {
             this.watchService = FileSystems.getDefault().newWatchService();
             this.running = true;
 
-            // Register all existing project workspace paths
+            // 1. Register all existing repository workspace paths (Priority)
+            List<RepositoryEntity> repos = repositoryRepository.findAll();
+            for (RepositoryEntity repo : repos) {
+                if (repo.getPath() != null && !repo.getPath().isBlank()) {
+                    watchRepository(repo);
+                }
+            }
+
+            // 2. Register all existing project workspace paths
             List<Project> projects = projectRepository.findAll();
             for (Project project : projects) {
                 if (project.getPath() != null && !project.getPath().isBlank()) {
@@ -67,10 +80,22 @@ public class WorkspaceWatcherService {
             }
 
             executor.submit(this::watchLoop);
-            log.info("Workspace File Watcher initialized and active for {} projects", projects.size());
+            log.info("Workspace File Watcher initialized and active for {} repos and {} projects", repos.size(), projects.size());
         } catch (Exception e) {
             log.warn("Failed to initialize workspace file watcher: {}", e.getMessage());
         }
+    }
+
+    public synchronized void watchRepository(RepositoryEntity repo) {
+        if (repo == null || repo.getPath() == null || repo.getPath().isBlank()) return;
+        Path root = Paths.get(repo.getPath());
+        if (!Files.exists(root) || !Files.isDirectory(root)) {
+            log.debug("Workspace path does not exist for repository {}: {}", repo.getName(), repo.getPath());
+            return;
+        }
+
+        UUID projId = repo.getProject() != null ? repo.getProject().getId() : null;
+        registerRecursive(root, projId, repo.getId(), "repository '" + repo.getName() + "'");
     }
 
     public synchronized void watchProject(Project project) {
@@ -81,6 +106,10 @@ public class WorkspaceWatcherService {
             return;
         }
 
+        registerRecursive(root, project.getId(), null, "project '" + project.getName() + "'");
+    }
+
+    private void registerRecursive(Path root, UUID projectId, UUID repoId, String label) {
         try {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
@@ -95,14 +124,15 @@ public class WorkspaceWatcherService {
                                 StandardWatchEventKinds.ENTRY_MODIFY,
                                 StandardWatchEventKinds.ENTRY_DELETE);
                         keyToPath.put(key, dir);
-                        pathToProjectId.put(dir, project.getId());
+                        if (projectId != null) pathToProjectId.put(dir, projectId);
+                        if (repoId != null) pathToRepositoryId.put(dir, repoId);
                     }
                     return FileVisitResult.CONTINUE;
                 }
             });
-            log.info("Watching workspace for project '{}' at: {}", project.getName(), root);
+            log.info("Watching workspace for {} at: {}", label, root);
         } catch (Exception e) {
-            log.warn("Error registering watcher for {}: {}", project.getPath(), e.getMessage());
+            log.warn("Error registering watcher for {}: {}", root, e.getMessage());
         }
     }
 
@@ -125,12 +155,15 @@ public class WorkspaceWatcherService {
             }
 
             UUID projectId = pathToProjectId.get(dir);
+            UUID repoId = pathToRepositoryId.get(dir);
 
             for (WatchEvent<?> event : key.pollEvents()) {
                 WatchEvent.Kind<?> kind = event.kind();
                 if (kind == StandardWatchEventKinds.OVERFLOW) {
-                    log.warn("Watcher OVERFLOW event in directory '{}', scheduling async project reconciliation", dir);
-                    if (projectId != null) {
+                    log.warn("Watcher OVERFLOW event in directory '{}', scheduling full reconciliation", dir);
+                    if (repoId != null) {
+                        workerPool.submit(() -> reconcileRepository(repoId));
+                    } else if (projectId != null) {
                         workerPool.submit(() -> reconcileProject(projectId));
                     }
                     continue;
@@ -141,20 +174,11 @@ public class WorkspaceWatcherService {
                 Path filename = ev.context();
                 Path fullPath = dir.resolve(filename);
 
-                // If a new directory was created, watch it
+                // If a new directory was created, watch it recursively
                 if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(fullPath)) {
                     String dirName = fullPath.getFileName().toString();
                     if (!IGNORED_DIRS.contains(dirName) && !dirName.startsWith(".")) {
-                        try {
-                            WatchKey newKey = fullPath.register(watchService,
-                                    StandardWatchEventKinds.ENTRY_CREATE,
-                                    StandardWatchEventKinds.ENTRY_MODIFY,
-                                    StandardWatchEventKinds.ENTRY_DELETE);
-                            keyToPath.put(newKey, fullPath);
-                            if (projectId != null) {
-                                pathToProjectId.put(fullPath, projectId);
-                            }
-                        } catch (IOException ignored) {}
+                        registerRecursive(fullPath, projectId, repoId, "subdirectory '" + dirName + "'");
                     }
                     continue;
                 }
@@ -168,10 +192,21 @@ public class WorkspaceWatcherService {
                 }
                 debounceMap.put(pathStr, now);
 
+                // Version tracking: monotonic timestamp to reject stale out-of-order writes in workerPool
+                long eventVersion = System.nanoTime();
+                fileWriteVersions.put(pathStr, eventVersion);
+
                 if (kind == StandardWatchEventKinds.ENTRY_CREATE || kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-                    workerPool.submit(() -> handleFileChange(fullPath, projectId));
+                    workerPool.submit(() -> {
+                        // Check if a newer event arrived for this file while waiting in pool
+                        Long currentVer = fileWriteVersions.get(pathStr);
+                        if (currentVer != null && currentVer > eventVersion) {
+                            return; // Newer version will handle this file
+                        }
+                        handleFileChange(fullPath, projectId, repoId);
+                    });
                 } else if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                    workerPool.submit(() -> handleFileDelete(fullPath, projectId));
+                    workerPool.submit(() -> handleFileDelete(fullPath, projectId, repoId));
                 }
             }
 
@@ -179,8 +214,20 @@ public class WorkspaceWatcherService {
             if (!valid) {
                 keyToPath.remove(key);
                 pathToProjectId.remove(dir);
+                pathToRepositoryId.remove(dir);
             }
         }
+    }
+
+    public void reconcileRepository(UUID repoId) {
+        if (repoId == null) return;
+        var rOpt = repositoryRepository.findById(repoId);
+        if (rOpt.isEmpty() || rOpt.get().getPath() == null) return;
+        Path root = Paths.get(rOpt.get().getPath());
+        if (!Files.exists(root)) return;
+
+        UUID projId = rOpt.get().getProject() != null ? rOpt.get().getProject().getId() : null;
+        reconcilePath(root, projId, repoId, "repo::" + repoId.toString());
     }
 
     public void reconcileProject(UUID projectId) {
@@ -190,31 +237,79 @@ public class WorkspaceWatcherService {
         Path root = Paths.get(pOpt.get().getPath());
         if (!Files.exists(root)) return;
 
-        log.info("Starting workspace reconciliation for project '{}'", pOpt.get().getName());
-        try (var stream = Files.walk(root, 5)) {
-            stream.filter(Files::isRegularFile)
-                    .filter(f -> !f.toString().contains("/.git/") && !f.toString().contains("/target/") && !f.toString().contains("/node_modules/"))
-                    .forEach(f -> handleFileChange(f, projectId));
+        reconcilePath(root, projectId, null, "proj::" + projectId.toString());
+    }
+
+    private void reconcilePath(Path root, UUID projectId, UUID repoId, String prefix) {
+        log.info("Starting complete workspace reconciliation (no depth cap) for prefix '{}' at {}", prefix, root);
+        Set<Path> diskFiles = new HashSet<>();
+
+        // 1. Walk entire disk tree unconstrained (filtering ignored dirs)
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    String dirName = dir.getFileName() != null ? dir.getFileName().toString() : "";
+                    if (IGNORED_DIRS.contains(dirName) || dirName.startsWith(".")) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile()) {
+                        diskFiles.add(file.toAbsolutePath().normalize());
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
         } catch (Exception e) {
-            log.warn("Reconciliation error for {}: {}", pOpt.get().getName(), e.getMessage());
+            log.warn("Error walking directory {}: {}", root, e.getMessage());
+        }
+
+        // 2. Discover deleted files: Compare indexed files in graph vs current disk files
+        List<Map<String, String>> indexedFiles = graphService.findFilesByPrefix(prefix);
+        for (Map<String, String> indexed : indexedFiles) {
+            String pStr = indexed.get("path");
+            if (pStr != null && !pStr.isBlank()) {
+                Path p = Paths.get(pStr).toAbsolutePath().normalize();
+                if (!diskFiles.contains(p) && !Files.exists(p)) {
+                    log.info("Reconciliation: Detected deleted file '{}', removing from brain", indexed.get("id"));
+                    handleFileDelete(p, projectId, repoId);
+                }
+            }
+        }
+
+        // 3. Process all existing files
+        for (Path f : diskFiles) {
+            handleFileChange(f, projectId, repoId);
         }
     }
 
-    private String computeFileId(Path filePath, UUID projectId) {
-        String projIdStr = projectId != null ? projectId.toString() : "global";
+    private String computeFileId(Path filePath, UUID projectId, UUID repoId) {
         String relPath = filePath.getFileName().toString();
-        if (projectId != null) {
+        if (repoId != null) {
+            var r = repositoryRepository.findById(repoId);
+            if (r.isPresent() && r.get().getPath() != null) {
+                try {
+                    relPath = Paths.get(r.get().getPath()).relativize(filePath).toString();
+                } catch (Exception ignored) {}
+            }
+            return "repo::" + repoId + "::" + relPath;
+        } else if (projectId != null) {
             var p = projectRepository.findById(projectId);
             if (p.isPresent() && p.get().getPath() != null) {
                 try {
                     relPath = Paths.get(p.get().getPath()).relativize(filePath).toString();
                 } catch (Exception ignored) {}
             }
+            return "proj::" + projectId + "::" + relPath;
         }
-        return projIdStr + "::" + relPath;
+        return "global::" + relPath;
     }
 
-    private void handleFileChange(Path filePath, UUID projectId) {
+    private void handleFileChange(Path filePath, UUID projectId, UUID repoId) {
         if (Files.isDirectory(filePath) || !Files.exists(filePath)) return;
         String fileName = filePath.getFileName().toString();
         if (fileName.startsWith(".") || fileName.endsWith("~") || fileName.endsWith(".tmp")) return;
@@ -224,24 +319,47 @@ public class WorkspaceWatcherService {
             Map<String, Object> structure = languageParserFactory.parseFile(filePath.toString(), content);
             if (structure == null) return;
 
-            String projIdStr = projectId != null ? projectId.toString() : "global";
-            String fileId = computeFileId(filePath, projectId);
+            String projIdStr = projectId != null ? projectId.toString() : "";
+            String repoIdStr = repoId != null ? repoId.toString() : "";
+            String fileId = computeFileId(filePath, projectId, repoId);
 
-            log.info("⚡ Instant Auto-Sync: Parsed file '{}' ({} functions) in workspace", fileId,
-                    ((List<?>) structure.getOrDefault("functions", List.of())).size());
+            // Fetch Git branch and commit metadata
+            String branch = "main";
+            String commitSha = "uncommitted";
+            try {
+                String repoDir = repoId != null && repositoryRepository.findById(repoId).isPresent()
+                        ? repositoryRepository.findById(repoId).get().getPath()
+                        : (projectId != null && projectRepository.findById(projectId).isPresent()
+                            ? projectRepository.findById(projectId).get().getPath()
+                            : null);
+                if (repoDir != null) {
+                    branch = gitService.getCurrentBranch(repoDir);
+                    List<Map<String, Object>> commits = gitService.getRecentCommits(repoDir, 1);
+                    if (!commits.isEmpty()) {
+                        commitSha = (String) commits.get(0).getOrDefault("hash", "uncommitted");
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            log.info("⚡ Instant Auto-Sync: Parsed file '{}' (branch: {}, commit: {}) ({} functions)", fileId,
+                    branch, commitSha, ((List<?>) structure.getOrDefault("functions", List.of())).size());
 
             // 1. Update File node in Neo4j
             graphService.createNode("File", fileId, Map.of(
                     "name", fileName,
                     "path", filePath.toString(),
-                    "language", structure.getOrDefault("language", "unknown")
+                    "language", structure.getOrDefault("language", "unknown"),
+                    "branch", branch,
+                    "commitSha", commitSha
             ));
 
-            if (projectId != null) {
+            if (repoId != null) {
+                graphService.createRelationship("Repository", repoIdStr, "File", fileId, "CONTAINS", null);
+            } else if (projectId != null) {
                 graphService.createRelationship("Project", projIdStr, "File", fileId, "CONTAINS", null);
             }
 
-            // 2. Update Functions in Neo4j
+            // 2. Update Functions in Neo4j & Qdrant
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> functions = (List<Map<String, Object>>) structure.getOrDefault("functions", List.of());
             for (Map<String, Object> func : functions) {
@@ -252,23 +370,29 @@ public class WorkspaceWatcherService {
                 props.put("file", fileName);
                 props.put("returnType", func.getOrDefault("returnType", "void"));
                 props.put("parameters", String.valueOf(func.getOrDefault("parameters", "")));
+                props.put("branch", branch);
+                props.put("commitSha", commitSha);
                 graphService.createNode("Function", funcId, props);
                 graphService.createRelationship("File", fileId, "Function", funcId, "DECLARES", null);
 
                 // Embed symbol into vector store
                 try {
-                    String symbolDoc = String.format("Function %s(%s) -> %s in %s",
-                            funcName, props.get("parameters"), props.get("returnType"), fileName);
+                    String symbolDoc = String.format("Function %s(%s) -> %s in %s (branch: %s)",
+                            funcName, props.get("parameters"), props.get("returnType"), fileName, branch);
                     float[] vec = embeddingService.embed(symbolDoc);
                     if (vec != null) {
                         String pointId = UUID.nameUUIDFromBytes(funcId.getBytes()).toString();
-                        vectorStoreService.upsert("symbol_knowledge", pointId, vec, Map.of(
-                                "name", funcName,
-                                "file", fileName,
-                                "projectId", projIdStr,
-                                "type", "function",
-                                "doc", symbolDoc
-                        ), Map.of());
+                        Map<String, String> payload = new HashMap<>();
+                        payload.put("name", funcName);
+                        payload.put("file", fileName);
+                        payload.put("fileId", fileId);
+                        if (!projIdStr.isBlank()) payload.put("projectId", projIdStr);
+                        if (!repoIdStr.isBlank()) payload.put("repositoryId", repoIdStr);
+                        payload.put("branch", branch);
+                        payload.put("commitSha", commitSha);
+                        payload.put("type", "function");
+                        payload.put("doc", symbolDoc);
+                        vectorStoreService.upsert("symbol_knowledge", pointId, vec, payload, Map.of());
                     }
                 } catch (Exception ignored) {}
             }
@@ -282,20 +406,21 @@ public class WorkspaceWatcherService {
                 graphService.createNode("Class", clsId, Map.of(
                         "name", clsName,
                         "file", fileName,
+                        "branch", branch,
                         "type", cls.getOrDefault("type", "class")
                 ));
                 graphService.createRelationship("File", fileId, "Class", clsId, "DECLARES", null);
             }
 
             // 4. Architectural Event-to-Knowledge Discovery Pipeline
-            extractArchitecturalPatterns(content, fileName, fileId, projIdStr);
+            extractArchitecturalPatterns(content, fileName, fileId, projIdStr, repoIdStr);
 
         } catch (Exception e) {
             log.debug("Auto-sync error on {}: {}", filePath, e.getMessage());
         }
     }
 
-    private void extractArchitecturalPatterns(String content, String fileName, String fileId, String projIdStr) {
+    private void extractArchitecturalPatterns(String content, String fileName, String fileId, String projIdStr, String repoIdStr) {
         try {
             Map<String, String> detectedTech = new HashMap<>();
 
@@ -341,12 +466,18 @@ public class WorkspaceWatcherService {
         }
     }
 
-    private void handleFileDelete(Path filePath, UUID projectId) {
-        String fileId = computeFileId(filePath, projectId);
+    private void handleFileDelete(Path filePath, UUID projectId, UUID repoId) {
+        String fileId = computeFileId(filePath, projectId, repoId);
 
         try {
+            // 1. Delete from Neo4j (File and all declared child Function/Class nodes)
             graphService.deleteFileCascade(fileId);
-            log.info("⚡ Instant Auto-Sync: Cascaded delete of file node '{}' from graph", fileId);
+
+            // 2. Delete vectors from Qdrant
+            vectorStoreService.deleteByFile("symbol_knowledge", fileId);
+            vectorStoreService.deleteByFile("code_knowledge", fileId);
+
+            log.info("⚡ Instant Auto-Sync: Cascaded delete of file node '{}' and vectors from Qdrant", fileId);
         } catch (Exception e) {
             log.debug("Error deleting node {}: {}", fileId, e.getMessage());
         }
