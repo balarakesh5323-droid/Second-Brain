@@ -15,10 +15,12 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true)
 @Entity
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 @Table(name = "agent_sessions")
 public class AgentSession extends BaseEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
     @JoinColumn(name = "agent_id", nullable = false)
     private Agent agent;
 
@@ -42,4 +44,8 @@ public class AgentSession extends BaseEntity {
 
     @Column(columnDefinition = "text")
     private String summary;
+
+    @Column(name = "event_sequence", nullable = false)
+    @Builder.Default
+    private Integer eventSequence = 0;
 }

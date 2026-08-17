@@ -23,4 +23,8 @@ public interface AgentSessionRepository extends JpaRepository<AgentSession, UUID
     List<AgentSession> findByProjectId(UUID projectId);
 
     List<AgentSession> findTop10ByOrderByStartedAtDesc();
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("SELECT s FROM AgentSession s WHERE s.id = :id")
+    java.util.Optional<AgentSession> findByIdForUpdate(@org.springframework.data.repository.query.Param("id") UUID id);
 }

@@ -68,13 +68,18 @@ public class AgentBridgeService {
             } catch (Exception ignored) {}
         }
 
+        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        session.setEventSequence(nextSeq);
+        sessionRepository.save(session);
+
         AgentEvent event = AgentEvent.builder()
                 .session(session)
+                .sequenceNumber(nextSeq)
                 .eventType(evtType)
                 .description(payload.getTaskDescription() != null ? payload.getTaskDescription() : payload.getActionType())
                 .filePath(payload.getFilePath())
                 .details(payload.getWorkingTreeDiff() != null ? payload.getWorkingTreeDiff() : payload.getNotes())
-                .status(payload.getErrorMessage() != null ? "FAILED" : "COMPLETED")
+                .processingStatus(payload.getErrorMessage() != null ? "FAILED" : "COMPLETED")
                 .build();
         event = eventRepository.save(event);
 
@@ -692,6 +697,7 @@ public class AgentBridgeService {
                 .status(com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name())
                 .startedAt(startedAt)
                 .endedAt(null)
+                .eventSequence(1)
                 .build();
         session = sessionRepository.save(session);
         UUID sessionId = session.getId();
@@ -702,7 +708,7 @@ public class AgentBridgeService {
                 .sequenceNumber(1)
                 .eventType(com.secondbrain.common.enums.EventType.SESSION_STARTED)
                 .description("Session started by " + agentName + " on task: " + session.getTask())
-                .status("COMPLETED")
+                .processingStatus("COMPLETED")
                 .build();
         eventRepository.save(startEvt);
 
@@ -736,7 +742,8 @@ public class AgentBridgeService {
 
     @Transactional
     public Map<String, Object> appendSessionEvent(UUID sessionId, SessionEventPayload payload) {
-        AgentSession session = sessionRepository.findById(sessionId)
+        // Row-level lock on session row to guarantee strict monotonic sequence allocation under concurrency
+        AgentSession session = sessionRepository.findByIdForUpdate(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
 
         // Reject appending events to already COMPLETED or FAILED sessions
@@ -780,10 +787,10 @@ public class AgentBridgeService {
             }
         }
 
-        // Calculate next monotonic sequence number for this session
-        int nextSeq = eventRepository.findTopBySessionIdOrderBySequenceNumberDesc(sessionId)
-                .map(e -> e.getSequenceNumber() != null ? e.getSequenceNumber() + 1 : 1)
-                .orElse(1);
+        // Atomically allocate the next monotonic sequence number for this session
+        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        session.setEventSequence(nextSeq);
+        sessionRepository.save(session);
 
         Agent agent = session.getAgent();
         RepositoryEntity repo = session.getRepository();
@@ -892,7 +899,7 @@ public class AgentBridgeService {
             eventDescription = "File touched: " + payload.getFilePath();
         }
 
-        // Save durable AgentEvent
+        // Save durable immutable AgentEvent
         AgentEvent agentEvt = AgentEvent.builder()
                 .session(session)
                 .sequenceNumber(nextSeq)
@@ -900,7 +907,7 @@ public class AgentBridgeService {
                 .description(eventDescription)
                 .details(eventDetails)
                 .filePath(payload.getFilePath())
-                .status("COMPLETED")
+                .processingStatus("COMPLETED")
                 .build();
         eventRepository.save(agentEvt);
 
@@ -928,7 +935,7 @@ public class AgentBridgeService {
 
     @Transactional
     public Map<String, Object> completeSession(UUID sessionId, CompleteSessionPayload payload) {
-        AgentSession session = sessionRepository.findById(sessionId)
+        AgentSession session = sessionRepository.findByIdForUpdate(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
 
         // Idempotency: If already completed or failed, return existing completion state cleanly
@@ -953,22 +960,13 @@ public class AgentBridgeService {
         }
 
         LocalDateTime endedAt = LocalDateTime.now();
-        session.setStatus(statusEnum.name());
-        session.setEndedAt(endedAt);
-        if (payload.getSummary() != null) {
-            session.setSummary(payload.getSummary());
-        }
-        sessionRepository.save(session);
+        int currentSeq = session.getEventSequence() != null ? session.getEventSequence() : 0;
 
         Agent agent = session.getAgent();
         RepositoryEntity repo = session.getRepository();
         Project project = session.getProject();
         String agentName = agent != null ? agent.getName() : "unknown-agent";
         String repoIdStr = repo != null ? repo.getId().toString() : null;
-
-        int nextSeq = eventRepository.findTopBySessionIdOrderBySequenceNumberDesc(sessionId)
-                .map(e -> e.getSequenceNumber() != null ? e.getSequenceNumber() + 1 : 1)
-                .orElse(1);
 
         Map<String, Object> handoffGraphProps = null;
         if (payload.getHandoff() != null && !payload.getHandoff().isEmpty()) {
@@ -990,23 +988,33 @@ public class AgentBridgeService {
             handoffGraphProps = new HashMap<>(h);
             handoffGraphProps.put("id", "handoff::" + handoff.getId().toString());
 
+            currentSeq++;
             AgentEvent handoffEvt = AgentEvent.builder()
                     .session(session)
-                    .sequenceNumber(nextSeq++)
+                    .sequenceNumber(currentSeq)
                     .eventType(com.secondbrain.common.enums.EventType.HANDOFF_CREATED)
                     .description("Handoff created: " + handoff.getTask())
                     .details(handoff.getNextSteps())
-                    .status("COMPLETED")
+                    .processingStatus("COMPLETED")
                     .build();
             eventRepository.save(handoffEvt);
         }
 
+        currentSeq++;
+        session.setEventSequence(currentSeq);
+        session.setStatus(statusEnum.name());
+        session.setEndedAt(endedAt);
+        if (payload.getSummary() != null) {
+            session.setSummary(payload.getSummary());
+        }
+        sessionRepository.save(session);
+
         AgentEvent endEvt = AgentEvent.builder()
                 .session(session)
-                .sequenceNumber(nextSeq)
+                .sequenceNumber(currentSeq)
                 .eventType(com.secondbrain.common.enums.EventType.SESSION_ENDED)
                 .description("Session concluded with status: " + statusEnum.name())
-                .status("COMPLETED")
+                .processingStatus("COMPLETED")
                 .build();
         eventRepository.save(endEvt);
 

@@ -391,12 +391,81 @@ public class AgentActivityMemoryIntegrationTest {
         assertThat(idempotentRes.get("idempotent")).isEqualTo(true);
         assertThat(idempotentRes.get("sessionStatus")).isEqualTo("COMPLETED");
 
-        // Step H: Verify payload mismatch rejection
+        // Step H: Verify payload mismatch rejection on ACTIVE session
+        AgentBridgeService.StartSessionPayload activePayload = AgentBridgeService.StartSessionPayload.builder()
+                .agentName("Claude Code")
+                .repositoryIdOrPath(testRepoA.getId().toString())
+                .task("Active Validation Session")
+                .build();
+        Map<String, Object> activeSessionRes = bridgeService.startSession(activePayload);
+        UUID activeSessionId = (UUID) activeSessionRes.get("sessionId");
+
         AgentBridgeService.SessionEventPayload mismatchedPayload = AgentBridgeService.SessionEventPayload.builder()
                 .eventType("DECISION")
                 .filePath("src/main/java/SomeService.java") // Unrelated field for a DECISION
                 .build();
-        assertThatThrownBy(() -> bridgeService.appendSessionEvent(UUID.randomUUID(), mismatchedPayload))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> bridgeService.appendSessionEvent(activeSessionId, mismatchedPayload))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("DECISION event requires decision payload and no unrelated payload fields");
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    @DisplayName("9. Concurrency: 20 parallel events are strictly ordered 1..21 without duplicates or gaps")
+    void testConcurrentEventSequencing() throws Exception {
+        AgentBridgeService.StartSessionPayload startPayload = AgentBridgeService.StartSessionPayload.builder()
+                .agentName("Codex")
+                .agentType("CODEX")
+                .repositoryIdOrPath(testRepoA.getId().toString())
+                .task("High-concurrency event stream test")
+                .build();
+
+        Map<String, Object> startResult = bridgeService.startSession(startPayload);
+        UUID sessionId = (UUID) startResult.get("sessionId");
+        assertThat(sessionId).isNotNull();
+
+        int numThreads = 20;
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(numThreads);
+        java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(numThreads);
+        java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(numThreads);
+        java.util.List<Throwable> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        for (int i = 1; i <= numThreads; i++) {
+            final int fileIdx = i;
+            executor.submit(() -> {
+                readyLatch.countDown();
+                try {
+                    startLatch.await();
+                    AgentBridgeService.SessionEventPayload event = AgentBridgeService.SessionEventPayload.builder()
+                            .eventType("FILE_TOUCHED")
+                            .filePath("src/main/java/ConcurrentService_" + fileIdx + ".java")
+                            .build();
+                    bridgeService.appendSessionEvent(sessionId, event);
+                } catch (Throwable t) {
+                    errors.add(t);
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        readyLatch.await();
+        startLatch.countDown(); // Fire all 20 threads simultaneously
+        boolean finished = doneLatch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        executor.shutdown();
+
+        assertThat(finished).isTrue();
+        assertThat(errors).isEmpty();
+
+        var events = bridgeService.getSessionEvents(sessionId);
+        assertThat(events).hasSize(21); // 1 start + 20 concurrent events
+
+        // Assert strictly monotonic 1..21 without gaps or duplicates
+        List<Integer> sequences = events.stream().map(com.secondbrain.common.entity.AgentEvent::getSequenceNumber).toList();
+        for (int i = 1; i <= 21; i++) {
+            assertThat(sequences.get(i - 1)).isEqualTo(i);
+        }
+        assertThat(sequences.stream().distinct().count()).isEqualTo(21);
     }
 }

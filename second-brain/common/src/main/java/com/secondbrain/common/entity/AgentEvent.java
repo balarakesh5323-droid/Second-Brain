@@ -16,28 +16,43 @@ import org.hibernate.type.SqlTypes;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true)
 @Entity
-@Table(name = "agent_events")
+@com.fasterxml.jackson.annotation.JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
+@Table(name = "agent_events", uniqueConstraints = {
+    @UniqueConstraint(name = "uk_agent_events_session_sequence", columnNames = {"session_id", "sequence_number"})
+})
 public class AgentEvent extends BaseEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "session_id", nullable = false)
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
+    @JoinColumn(name = "session_id", nullable = false, updatable = false)
     private AgentSession session;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, updatable = false)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     private EventType eventType;
 
-    @Column(name = "sequence_number")
+    @Column(name = "sequence_number", updatable = false)
     private Integer sequenceNumber;
 
+    @Column(updatable = false)
     private String description;
 
+    @Column(updatable = false)
     private String filePath;
 
-    @Column(columnDefinition = "text")
+    @Column(columnDefinition = "text", updatable = false)
     private String details;
 
-    @Column(nullable = false)
-    private String status;
+    @Column(name = "processing_status", nullable = false)
+    @Builder.Default
+    private String processingStatus = "COMPLETED";
+
+    public String getStatus() {
+        return processingStatus;
+    }
+
+    public void setStatus(String status) {
+        this.processingStatus = status;
+    }
 }

@@ -25,14 +25,18 @@ public class AgentEventService {
     public AgentEvent recordEvent(EventDto dto) {
         AgentSession session = agentSessionRepository.findById(dto.getSessionId())
                 .orElseThrow(() -> new ResourceNotFoundException("AgentSession", dto.getSessionId()));
+        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        session.setEventSequence(nextSeq);
+        agentSessionRepository.save(session);
 
         AgentEvent event = AgentEvent.builder()
                 .session(session)
+                .sequenceNumber(nextSeq)
                 .eventType(dto.getEventType())
                 .description(dto.getDescription())
                 .filePath(dto.getFilePath())
                 .details(dto.getDetails())
-                .status(dto.getStatus())
+                .processingStatus(dto.getStatus() != null ? dto.getStatus() : "COMPLETED")
                 .build();
 
         return agentEventRepository.save(event);

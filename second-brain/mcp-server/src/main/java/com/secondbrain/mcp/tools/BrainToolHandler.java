@@ -118,7 +118,7 @@ public class BrainToolHandler {
                 .eventType(EventType.valueOf(eventType))
                 .description(description)
                 .filePath(filePath)
-                .status(status != null ? status : "success")
+                .processingStatus(status != null ? status : "COMPLETED")
                 .build();
 
             eventRepository.save(event);
