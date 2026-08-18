@@ -20,15 +20,15 @@ import java.util.*;
 public class SemanticKnowledgeSynthesisService {
 
     private final MemoryRepository memoryRepository;
-    private final DecisionRepository decisionRepository;
-    private final AgentAttemptRepository attemptRepository;
     private final SemanticSearchService semanticSearchService;
     private final GraphService graphService;
     private final LlmSynthesisEngine llmSynthesisEngine;
+    private final ProposalValidator proposalValidator;
     private final OutboxProjectionService outboxService;
 
     /**
      * Synthesizes and promotes architectural decisions into durable long-term memories.
+     * Enforces strict proposal validation, empirical confidence gating, and contradiction superseding.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<Memory> synthesizeAndPromoteArchitecturalKnowledge(
@@ -54,7 +54,7 @@ public class SemanticKnowledgeSynthesisService {
             log.debug("Semantic search during synthesis skipped: {}", e.getMessage());
         }
 
-        // 2. Gather graph neighborhood from Neo4j
+        // 2. Gather full graph neighborhood from Neo4j
         List<Map<String, Object>> graphContext = List.of();
         if (repository != null && repository.getId() != null) {
             try {
@@ -62,21 +62,22 @@ public class SemanticKnowledgeSynthesisService {
             } catch (Exception ignored) {}
         }
 
-        // 3. Generate structured KnowledgeProposal via LLM Engine
+        // 3. Generate structured KnowledgeProposal via LLM Engine (feeding graph + memories)
         Optional<KnowledgeProposal> proposalOpt = llmSynthesisEngine.synthesizeArchitecturalProposal(
                 topic, projectKey, decisions, existingMemories, graphContext
         );
 
         if (proposalOpt.isEmpty()) return Optional.empty();
-        KnowledgeProposal proposal = proposalOpt.get();
+        KnowledgeProposal rawProposal = proposalOpt.get();
 
-        // 4. Anti-Hallucination & Evidence Validation: Filter to only valid, existing entity IDs
-        Set<String> validatedEvidence = validateEvidenceSources(proposal.getEvidenceSources());
-        if (validatedEvidence.isEmpty() && !decisions.isEmpty()) {
-            for (Decision d : decisions) {
-                if (d.getId() != null) validatedEvidence.add("decision:" + d.getId());
-            }
+        // 4. Hard Proposal Validation: verify empirical evidence, reject hallucinations, calibrate confidence
+        ProposalValidator.ValidationResult validationResult = proposalValidator.validate(rawProposal, existingMemories);
+        if (!validationResult.isValid()) {
+            log.warn("❌ Proposal for topic [{}] rejected by validator: {}", topic, validationResult.getRejectionReason());
+            return Optional.empty();
         }
+
+        KnowledgeProposal proposal = validationResult.getSanitizedProposal();
 
         // 5. Transactional Memory Upsert
         Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(proposal.getMemoryKey());
@@ -85,7 +86,7 @@ public class SemanticKnowledgeSynthesisService {
         if (existingOpt.isPresent()) {
             Memory memory = existingOpt.get();
             int newEvidenceCount = 0;
-            for (String ev : validatedEvidence) {
+            for (String ev : proposal.getEvidenceSources()) {
                 if (memory.getEvidenceSources().add(ev)) {
                     newEvidenceCount++;
                 }
@@ -93,8 +94,8 @@ public class SemanticKnowledgeSynthesisService {
             if (newEvidenceCount > 0) {
                 memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 0) + newEvidenceCount);
                 memory.setEvidenceCount(memory.getEvidenceSources().size());
-                memory.setConfidence(proposal.getConfidence() != null ? proposal.getConfidence() : 0.92);
-                memory.setStatus(proposal.getStatus() != null ? proposal.getStatus() : MemoryStatus.CONFIRMED);
+                memory.setConfidence(proposal.getConfidence());
+                memory.setStatus(proposal.getStatus());
                 memory.setLastSeenAt(LocalDateTime.now());
                 savedMemory = memoryRepository.save(memory);
                 enqueueOutboxProjections(savedMemory);
@@ -109,13 +110,13 @@ public class SemanticKnowledgeSynthesisService {
                     .scope(project != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
                     .project(project)
                     .repository(repository)
-                    .status(proposal.getStatus() != null ? proposal.getStatus() : MemoryStatus.CONFIRMED)
-                    .confidence(proposal.getConfidence() != null ? proposal.getConfidence() : 0.90)
+                    .status(proposal.getStatus())
+                    .confidence(proposal.getConfidence())
                     .importance(0.88)
-                    .observationCount(validatedEvidence.size())
-                    .evidenceCount(validatedEvidence.size())
-                    .evidenceSources(validatedEvidence)
-                    .provenanceSource("MULTI_AGENT_CONSENSUS")
+                    .observationCount(proposal.getEvidenceSources().size())
+                    .evidenceCount(proposal.getEvidenceSources().size())
+                    .evidenceSources(proposal.getEvidenceSources())
+                    .provenanceSource(validationResult.getAssessment().getProvenanceSource())
                     .tags(proposal.getSuggestedTags() != null ? proposal.getSuggestedTags() : new HashSet<>(Set.of(topic.toLowerCase())))
                     .firstSeenAt(LocalDateTime.now())
                     .lastSeenAt(LocalDateTime.now())
@@ -125,39 +126,24 @@ public class SemanticKnowledgeSynthesisService {
             enqueueOutboxProjections(savedMemory);
         }
 
-        // 6. Handle Superseded Knowledge
+        // 6. Handle Validated Superseded Knowledge
         if (proposal.getSupersedesMemoryKeys() != null) {
             for (String supersededKey : proposal.getSupersedesMemoryKeys()) {
                 memoryRepository.findByMemoryKey(supersededKey).ifPresent(oldMem -> {
-                    oldMem.setStatus(MemoryStatus.SUPERSEDED);
-                    oldMem.setSupersededBy(savedMemory.getId());
-                    oldMem.setSupersededAt(LocalDateTime.now());
-                    oldMem.setConfidence(Math.max(0.1, (oldMem.getConfidence() != null ? oldMem.getConfidence() : 0.5) * 0.5));
-                    memoryRepository.save(oldMem);
-                    enqueueOutboxProjections(oldMem);
-                    log.info("🔄 Memory [{}] superseded by new standard [{}]", oldMem.getMemoryKey(), savedMemory.getMemoryKey());
+                    if (oldMem.getStatus() != MemoryStatus.SUPERSEDED) {
+                        oldMem.setStatus(MemoryStatus.SUPERSEDED);
+                        oldMem.setSupersededBy(savedMemory.getId());
+                        oldMem.setSupersededAt(LocalDateTime.now());
+                        oldMem.setConfidence(Math.max(0.1, (oldMem.getConfidence() != null ? oldMem.getConfidence() : 0.5) * 0.5));
+                        memoryRepository.save(oldMem);
+                        enqueueOutboxProjections(oldMem);
+                        log.info("🔄 Memory [{}] superseded by [{}]", oldMem.getMemoryKey(), savedMemory.getMemoryKey());
+                    }
                 });
             }
         }
 
         return Optional.of(savedMemory);
-    }
-
-    private Set<String> validateEvidenceSources(Set<String> sources) {
-        if (sources == null || sources.isEmpty()) return new HashSet<>();
-        Set<String> validated = new HashSet<>();
-        for (String ev : sources) {
-            try {
-                if (ev.startsWith("decision:")) {
-                    UUID id = UUID.fromString(ev.substring("decision:".length()));
-                    if (decisionRepository.existsById(id)) validated.add(ev);
-                } else if (ev.startsWith("attempt:")) {
-                    UUID id = UUID.fromString(ev.substring("attempt:".length()));
-                    if (attemptRepository.existsById(id)) validated.add(ev);
-                }
-            } catch (Exception ignored) {}
-        }
-        return validated;
     }
 
     private void enqueueOutboxProjections(Memory memory) {

@@ -7,7 +7,9 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 @Data
@@ -32,4 +34,7 @@ public class KnowledgeProposal {
 
     @Builder.Default
     private Set<String> suggestedTags = new HashSet<>();
+
+    @Builder.Default
+    private List<AgentProvenance> provenances = new ArrayList<>();
 }

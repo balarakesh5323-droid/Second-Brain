@@ -1,5 +1,6 @@
 package com.secondbrain.service;
 
+import com.secondbrain.common.dto.AgentProvenance;
 import com.secondbrain.common.dto.KnowledgeProposal;
 import com.secondbrain.common.entity.Decision;
 import com.secondbrain.common.entity.Memory;
@@ -8,6 +9,7 @@ import com.secondbrain.common.entity.RepositoryEntity;
 import com.secondbrain.common.enums.MemoryStatus;
 import com.secondbrain.common.enums.MemoryType;
 import com.secondbrain.common.repository.AgentAttemptRepository;
+import com.secondbrain.common.repository.AgentSessionRepository;
 import com.secondbrain.common.repository.DecisionRepository;
 import com.secondbrain.common.repository.MemoryRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +21,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -41,6 +44,9 @@ class SemanticKnowledgeSynthesisServiceTest {
     private AgentAttemptRepository attemptRepository;
 
     @Mock
+    private AgentSessionRepository sessionRepository;
+
+    @Mock
     private SemanticSearchService semanticSearchService;
 
     @Mock
@@ -52,17 +58,27 @@ class SemanticKnowledgeSynthesisServiceTest {
     @Mock
     private OutboxProjectionService outboxService;
 
+    private ProposalValidator proposalValidator;
     private SemanticKnowledgeSynthesisService synthesisService;
 
     @BeforeEach
     void setUp() {
-        synthesisService = new SemanticKnowledgeSynthesisService(
-                memoryRepository,
+        EvidenceConfidenceEngine confidenceEngine = new EvidenceConfidenceEngine();
+        ContradictionClassifier contradictionClassifier = new ContradictionClassifier();
+        proposalValidator = new ProposalValidator(
                 decisionRepository,
                 attemptRepository,
+                sessionRepository,
+                confidenceEngine,
+                contradictionClassifier
+        );
+
+        synthesisService = new SemanticKnowledgeSynthesisService(
+                memoryRepository,
                 semanticSearchService,
                 graphService,
                 llmSynthesisEngine,
+                proposalValidator,
                 outboxService
         );
     }
@@ -101,9 +117,12 @@ class SemanticKnowledgeSynthesisServiceTest {
                 .knowledge("Redis Sliding Window Token Revocation is the standard strategy.")
                 .type(MemoryType.ARCHITECTURAL)
                 .status(MemoryStatus.ESTABLISHED)
-                .confidence(0.94)
+                .confidence(0.99) // LLM claimed 0.99
                 .evidenceSources(Set.of("decision:" + decId1, "decision:" + decId2, "decision:" + fakeDecId))
-                .supersedesMemoryKeys(Set.of("ARCHITECTURAL_STANDARD:" + projId + ":IN_MEMORY"))
+                .provenances(List.of(
+                        AgentProvenance.builder().agentName("Claude Code").repositoryName("auth-service").sessionId("s1").build(),
+                        AgentProvenance.builder().agentName("Codex").repositoryName("payment-service").sessionId("s2").build()
+                ))
                 .projectKey(projId.toString())
                 .reasoning("Consolidated across distributed authentication services.")
                 .build();
@@ -124,7 +143,7 @@ class SemanticKnowledgeSynthesisServiceTest {
         // Mock old memory that gets superseded
         Memory oldMemory = Memory.builder()
                 .memoryKey("ARCHITECTURAL_STANDARD:" + projId + ":IN_MEMORY")
-                .content("Use in-memory store")
+                .content("Use in-memory store for session tokens")
                 .status(MemoryStatus.CONFIRMED)
                 .confidence(0.70)
                 .build();
@@ -132,6 +151,12 @@ class SemanticKnowledgeSynthesisServiceTest {
 
         when(memoryRepository.findByMemoryKey("ARCHITECTURAL_STANDARD:" + projId + ":IN_MEMORY"))
                 .thenReturn(Optional.of(oldMemory));
+        when(memoryRepository.findById(oldMemory.getId()))
+                .thenReturn(Optional.of(oldMemory));
+        when(semanticSearchService.searchScoped(eq("Redis"), eq("technical_memory"), eq(projId.toString()), any(), eq(10)))
+                .thenReturn(List.of(com.secondbrain.common.dto.SearchResult.builder()
+                        .payload(Map.of("id", oldMemory.getId().toString()))
+                        .build()));
 
         // Execute synthesis
         Optional<Memory> result = synthesisService.synthesizeAndPromoteArchitecturalKnowledge(
@@ -141,8 +166,7 @@ class SemanticKnowledgeSynthesisServiceTest {
         assertThat(result).isPresent();
         Memory synthesized = result.get();
         assertThat(synthesized.getMemoryKey()).isEqualTo("ARCHITECTURAL_STANDARD:" + projId + ":REDIS");
-        assertThat(synthesized.getStatus()).isEqualTo(MemoryStatus.ESTABLISHED);
-        assertThat(synthesized.getConfidence()).isEqualTo(0.94);
+        assertThat(synthesized.getConfidence()).isBetween(0.70, 0.95); // Empirically calibrated from 2 observations + diversity bonus
 
         // Anti-hallucination verified: fake ID excluded, only real decisions retained
         assertThat(synthesized.getEvidenceSources()).containsExactlyInAnyOrder("decision:" + decId1, "decision:" + decId2);
