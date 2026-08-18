@@ -69,7 +69,7 @@ class CurrentStateServiceTest {
     }
 
     @Test
-    @DisplayName("Current State Briefing: Synthesizes git status, dirty files, tasks vs attempts, blockers, and semantic knowledge")
+    @DisplayName("Current State Briefing: Synthesizes git status, dirty files, tasks vs attempts, blockers, semantic knowledge, and next actions")
     void testGetCurrentStateBriefing() throws Exception {
         UUID repoId = UUID.randomUUID();
         UUID projId = UUID.randomUUID();
@@ -132,11 +132,12 @@ class CurrentStateServiceTest {
         when(attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(eq(repoId), any(Pageable.class)))
                 .thenReturn(List.of(successfulAttempt, failedAttempt));
 
-        // 5. Mock Task-Aware Semantic Memory Retrieval
-        when(semanticSearchService.searchScoped(eq("authentication"), eq("agent_memory"), any(), any(), eq(8)))
-                .thenReturn(List.of(
-                        SearchResult.builder().content("Redis Sliding Window is used for distributed token blacklisting.").score(0.92f).build()
-                ));
+        // 5. Mock Task-Aware Status-Filtered Semantic Memory Retrieval
+        when(semanticSearchService.searchScopedWithStatuses(
+                eq("authentication"), eq("agent_memory"), any(), any(), eq(List.of("ESTABLISHED", "CONFIRMED")), eq(8)
+        )).thenReturn(List.of(
+                SearchResult.builder().content("Redis Sliding Window is used for distributed token blacklisting.").score(0.92f).build()
+        ));
 
         // Execute
         CurrentStateResponse state = currentStateService.getCurrentState("automorium_backend", projId.toString(), "authentication");
@@ -161,6 +162,12 @@ class CurrentStateServiceTest {
         // Verify Semantic Established Knowledge
         assertThat(state.getRelevantEstablishedKnowledge()).contains("Redis Sliding Window is used for distributed token blacklisting.");
 
+        // Verify Next Action Recommendations
+        assertThat(state.getNextRecommendedActions()).isNotEmpty();
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("CRITICAL") && r.getAction().contains("Awaiting DevOps IAM role"));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("HIGH") && r.getAction().contains("Redis atomic SETNX"));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("MEDIUM") && r.getAction().contains("AuthService.java"));
+
         // Verify Formatted Briefing
         String briefing = state.getFormattedBriefing();
         assertThat(briefing).contains("## 🌿 Working Tree & Git Status");
@@ -171,6 +178,7 @@ class CurrentStateServiceTest {
         assertThat(briefing).contains("Must use Redis atomic SETNX with sliding window");
         assertThat(briefing).contains("## ⚠️ Current Blockers");
         assertThat(briefing).contains("Awaiting DevOps IAM role");
+        assertThat(briefing).contains("## 🎯 Recommended Next Actions");
         assertThat(briefing).contains("Redis Sliding Window is used for distributed token blacklisting.");
     }
 }

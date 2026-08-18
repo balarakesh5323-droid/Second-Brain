@@ -32,6 +32,7 @@ public class CurrentStateService {
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final List<MemoryStatus> ACTIVE_STATUSES = List.of(MemoryStatus.ESTABLISHED, MemoryStatus.CONFIRMED);
+    private static final List<String> ACTIVE_STATUS_STRS = List.of("ESTABLISHED", "CONFIRMED");
 
     @Transactional(readOnly = true)
     public CurrentStateResponse getCurrentState(String repoIdOrName, String projectIdOrName, String targetTask) {
@@ -166,8 +167,8 @@ public class CurrentStateService {
                 .historicalFailures(historicalFailures.stream().limit(5).toList())
                 .lastFailedAttempt(lastFail);
 
-        // 5. Scalable Task-Aware Semantic Memory Retrieval (Zero findAll())
-        List<String> establishedKnowledge = retrieveTaskRelevantKnowledge(
+        // 5. Scalable Task-Aware Semantic Memory Retrieval with Hierarchical Fallback
+        List<String> establishedKnowledge = retrieveTaskRelevantKnowledgeHierarchical(
                 targetTask,
                 projId != null ? projId.toString() : null,
                 repoId != null ? repoId.toString() : null,
@@ -176,7 +177,17 @@ public class CurrentStateService {
         );
         builder.relevantEstablishedKnowledge(establishedKnowledge);
 
-        // 6. Build Formatted Markdown Briefing
+        // 6. Synthesize Structured Next Action Recommendations
+        List<CurrentStateResponse.NextActionRecommendation> nextActions = synthesizeNextRecommendations(
+                modifiedFiles,
+                currentBlockers,
+                lastFail,
+                inProgressTasks,
+                activeTrials
+        );
+        builder.nextRecommendedActions(nextActions);
+
+        // 7. Build Formatted Markdown Briefing
         String formattedBriefing = buildBriefing(
                 repo != null ? repo.getName() : "Global",
                 project != null ? project.getName() : "Default",
@@ -189,17 +200,17 @@ public class CurrentStateService {
     }
 
     /**
-     * Retrieves task-relevant established memories via Qdrant semantic vector search with DB fallback.
-     * Guaranteed O(1) database bounded retrieval without full table scans.
+     * Retrieves task-relevant memories via Qdrant vector search strictly filtered by ACTIVE_STATUSES,
+     * followed by hierarchical progressive DB scoping (Primary Repo -> Project/Siblings -> Global).
      */
-    private List<String> retrieveTaskRelevantKnowledge(String targetTask, String projIdStr, String repoIdStr, UUID projId, UUID repoId) {
+    private List<String> retrieveTaskRelevantKnowledgeHierarchical(String targetTask, String projIdStr, String repoIdStr, UUID projId, UUID repoId) {
         Set<String> resultKnowledge = new LinkedHashSet<>();
 
-        // A. Semantic Retrieval from Qdrant if task query is specified
+        // Stage 1: Vector search in Qdrant strictly filtered by ESTABLISHED & CONFIRMED
         if (targetTask != null && !targetTask.isBlank() && semanticSearchService != null) {
             try {
-                List<SearchResult> semanticHits = semanticSearchService.searchScoped(
-                        targetTask, "agent_memory", projIdStr, repoIdStr, 8
+                List<SearchResult> semanticHits = semanticSearchService.searchScopedWithStatuses(
+                        targetTask, "agent_memory", projIdStr, repoIdStr, ACTIVE_STATUS_STRS, 8
                 );
                 for (SearchResult hit : semanticHits) {
                     if (hit.getContent() != null && !hit.getContent().isBlank()) {
@@ -211,19 +222,39 @@ public class CurrentStateService {
             }
         }
 
-        // B. Bounded Database Query Fallback if semantic results < 8
+        // Stage 2: Hierarchical Database Scoping Fallback
+        if (resultKnowledge.size() < 8 && repoId != null) {
+            int needed = 8 - resultKnowledge.size();
+            List<Memory> repoMemories = memoryRepository.findByRepositoryIdAndStatusInOrderByConfidenceDesc(
+                    repoId, ACTIVE_STATUSES, PageRequest.of(0, needed)
+            );
+            for (Memory m : repoMemories) {
+                if (m.getContent() != null && !m.getContent().isBlank()) {
+                    resultKnowledge.add(m.getContent());
+                }
+            }
+        }
+
+        // Stage 3: Sibling/Project Scope Fallback
+        if (resultKnowledge.size() < 8 && projId != null) {
+            int needed = 8 - resultKnowledge.size();
+            List<Memory> projMemories = memoryRepository.findByProjectIdAndStatusInOrderByConfidenceDesc(
+                    projId, ACTIVE_STATUSES, PageRequest.of(0, needed)
+            );
+            for (Memory m : projMemories) {
+                if (m.getContent() != null && !m.getContent().isBlank()) {
+                    resultKnowledge.add(m.getContent());
+                }
+            }
+        }
+
+        // Stage 4: Global High-Confidence Fallback
         if (resultKnowledge.size() < 8) {
             int needed = 8 - resultKnowledge.size();
-            List<Memory> dbMemories;
-            if (repoId != null) {
-                dbMemories = memoryRepository.findByRepositoryIdAndStatusInOrderByConfidenceDesc(repoId, ACTIVE_STATUSES, PageRequest.of(0, needed));
-            } else if (projId != null) {
-                dbMemories = memoryRepository.findByProjectIdAndStatusInOrderByConfidenceDesc(projId, ACTIVE_STATUSES, PageRequest.of(0, needed));
-            } else {
-                dbMemories = memoryRepository.findByStatusInOrderByConfidenceDesc(ACTIVE_STATUSES, PageRequest.of(0, needed));
-            }
-
-            for (Memory m : dbMemories) {
+            List<Memory> globalMemories = memoryRepository.findByStatusInOrderByConfidenceDesc(
+                    ACTIVE_STATUSES, PageRequest.of(0, needed)
+            );
+            for (Memory m : globalMemories) {
                 if (m.getContent() != null && !m.getContent().isBlank()) {
                     resultKnowledge.add(m.getContent());
                 }
@@ -231,6 +262,78 @@ public class CurrentStateService {
         }
 
         return new ArrayList<>(resultKnowledge);
+    }
+
+    /**
+     * Synthesizes actionable, prioritized next steps for incoming agents.
+     */
+    private List<CurrentStateResponse.NextActionRecommendation> synthesizeNextRecommendations(
+            List<String> modifiedFiles,
+            List<String> currentBlockers,
+            CurrentStateResponse.LastFailureSummary lastFail,
+            List<String> inProgressTasks,
+            List<String> activeTrials
+    ) {
+        List<CurrentStateResponse.NextActionRecommendation> recommendations = new ArrayList<>();
+
+        // Priority 1: Current Blockers
+        if (!currentBlockers.isEmpty()) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("CRITICAL")
+                    .action("Address active project blocker: " + currentBlockers.get(0))
+                    .reason("Task is explicitly flagged as BLOCKED in the project backlog")
+                    .evidence(List.of("BacklogTaskBlocked"))
+                    .build());
+        }
+
+        // Priority 2: Last Failed Trial Investigation
+        if (lastFail != null) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("HIGH")
+                    .action("Avoid repeated failure in approach: " + lastFail.getApproach() + " (Lesson: " + (lastFail.getLessonLearned() != null ? lastFail.getLessonLearned() : "Refer to error log") + ")")
+                    .reason("Previous trial failed with error: " + lastFail.getFailureReason())
+                    .evidence(List.of("AgentAttemptFailure:" + lastFail.getAgentName()))
+                    .build());
+        }
+
+        // Priority 3: In Progress Tasks or Active Trials
+        if (!inProgressTasks.isEmpty()) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("HIGH")
+                    .action("Continue active in-progress task: " + inProgressTasks.get(0))
+                    .reason("Work was in progress during last session")
+                    .evidence(List.of("TaskInProgress"))
+                    .build());
+        } else if (!activeTrials.isEmpty()) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("HIGH")
+                    .action("Resume active trial: " + activeTrials.get(0))
+                    .reason("Trial was ongoing during last agent turn")
+                    .evidence(List.of("ActiveTrial"))
+                    .build());
+        }
+
+        // Priority 4: Working Tree Inspection
+        if (!modifiedFiles.isEmpty()) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("MEDIUM")
+                    .action("Inspect uncommitted modified files in working tree (" + String.join(", ", modifiedFiles) + ")")
+                    .reason("Previous agent left dirty changes in the working tree; verify before editing")
+                    .evidence(modifiedFiles)
+                    .build());
+        }
+
+        // Priority 5: Default Ready Action
+        if (recommendations.isEmpty()) {
+            recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
+                    .priority("LOW")
+                    .action("Call brain_start_session and proceed with task implementation")
+                    .reason("Working tree is clean and no active blockers are recorded")
+                    .evidence(List.of("CleanState"))
+                    .build());
+        }
+
+        return recommendations;
     }
 
     private String buildBriefing(String repoName, String projectName, String targetTask, CurrentStateResponse state) {
@@ -334,6 +437,16 @@ public class CurrentStateService {
             sb.append("## 🧠 Relevant Established Knowledge\n");
             for (String k : state.getRelevantEstablishedKnowledge()) {
                 sb.append("- • ").append(k).append("\n");
+            }
+            sb.append("\n");
+        }
+
+        // Next Recommended Actions
+        if (!state.getNextRecommendedActions().isEmpty()) {
+            sb.append("## 🎯 Recommended Next Actions\n");
+            for (var rec : state.getNextRecommendedActions()) {
+                sb.append("- **[").append(rec.getPriority()).append("]** ").append(rec.getAction())
+                        .append(" *(Reason: ").append(rec.getReason()).append(")*\n");
             }
             sb.append("\n");
         }

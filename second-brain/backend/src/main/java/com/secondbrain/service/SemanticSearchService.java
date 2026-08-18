@@ -20,6 +20,14 @@ public class SemanticSearchService {
     }
 
     public List<SearchResult> searchScoped(String query, String collectionName, String projectId, String repositoryId, int limit) {
+        return searchScopedWithStatuses(query, collectionName, projectId, repositoryId, null, limit);
+    }
+
+    /**
+     * Executes vector search scoped by repository/project and strictly filtered by allowed memory lifecycle statuses
+     * (e.g. ESTABLISHED, CONFIRMED) to prevent untrusted or superseded memories from leaking into agent context.
+     */
+    public List<SearchResult> searchScopedWithStatuses(String query, String collectionName, String projectId, String repositoryId, List<String> allowedStatuses, int limit) {
         float[] queryVector = embeddingService.embed(query);
         if (queryVector == null) return List.of();
 
@@ -33,7 +41,9 @@ public class SemanticSearchService {
             }
         }
 
-        List<Map<String, Object>> points = vectorStoreService.searchWithFilter(collectionName, queryVector, mustFilters, limit);
+        int overfetchLimit = (allowedStatuses != null && !allowedStatuses.isEmpty()) ? Math.max(limit * 3, 20) : limit;
+        List<Map<String, Object>> points = vectorStoreService.searchWithFilter(collectionName, queryVector, mustFilters, overfetchLimit);
+        
         return points.stream()
             .map(point -> {
                 @SuppressWarnings("unchecked")
@@ -47,6 +57,14 @@ public class SemanticSearchService {
                     .payload(payload != null ? payload : Map.of())
                     .build();
             })
+            .filter(res -> {
+                if (allowedStatuses == null || allowedStatuses.isEmpty()) return true;
+                Object statusObj = res.getPayload().get("status");
+                if (statusObj == null) return true; // untyped memory collections allowed
+                String statusStr = statusObj.toString().toUpperCase();
+                return allowedStatuses.stream().anyMatch(statusStr::equalsIgnoreCase);
+            })
+            .limit(limit)
             .toList();
     }
 
@@ -58,17 +76,9 @@ public class SemanticSearchService {
         return searchAllCollectionsScoped(query, null, null, limit);
     }
 
-    /**
-     * Hierarchical multi-scope knowledge retrieval:
-     * 1. Repository-level knowledge (Weight: 1.0)
-     * 2. Project-level knowledge (Weight: 0.8)
-     * 3. Global & Documentation knowledge (Weight: 0.6)
-     * Reranks and deduplicates before returning top matches.
-     */
     public List<SearchResult> searchAllCollectionsScoped(String query, String projectId, String repositoryId, int limit) {
-        Map<String, SearchResult> mergedMap = new HashMap<>();
-
-        List<String> collections = List.of(
+        List<SearchResult> results = new ArrayList<>();
+        List<String> targetCollections = List.of(
             "global_knowledge",
             "project_knowledge",
             "repository_knowledge",
@@ -80,61 +90,17 @@ public class SemanticSearchService {
             "documentation"
         );
 
-        // Tier 1: Repository Scope (Weight 1.0)
-        if (repositoryId != null && !repositoryId.isBlank()) {
-            for (String col : collections) {
-                try {
-                    List<SearchResult> res = searchScoped(query, col, projectId, repositoryId, limit);
-                    for (SearchResult r : res) {
-                        mergedMap.put(r.getId(), r);
-                    }
-                } catch (Exception ignored) {}
-            }
-        }
+        int perCollectionLimit = Math.max(2, limit / 3);
 
-        // Tier 2: Project Scope (Weight 0.8)
-        if (projectId != null && !projectId.isBlank()) {
-            for (String col : collections) {
-                try {
-                    List<SearchResult> res = searchScoped(query, col, projectId, null, limit);
-                    for (SearchResult r : res) {
-                        if (!mergedMap.containsKey(r.getId())) {
-                            SearchResult weighted = SearchResult.builder()
-                                    .id(r.getId())
-                                    .score(r.getScore() * 0.8f)
-                                    .collection(r.getCollection())
-                                    .content(r.getContent())
-                                    .payload(r.getPayload())
-                                    .build();
-                            mergedMap.put(r.getId(), weighted);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }
-        }
-
-        // Tier 3: Global Knowledge & Technical Documentation (Weight 0.6)
-        List<String> globalCols = List.of("global_knowledge", "documentation", "technical_memory");
-        for (String col : globalCols) {
+        for (String collection : targetCollections) {
             try {
-                List<SearchResult> res = searchScoped(query, col, null, null, limit);
-                for (SearchResult r : res) {
-                    if (!mergedMap.containsKey(r.getId())) {
-                        SearchResult weighted = SearchResult.builder()
-                                .id(r.getId())
-                                .score(r.getScore() * 0.6f)
-                                .collection(r.getCollection())
-                                .content(r.getContent())
-                                .payload(r.getPayload())
-                                .build();
-                        mergedMap.put(r.getId(), weighted);
-                    }
-                }
-            } catch (Exception ignored) {}
+                results.addAll(searchScoped(query, collection, projectId, repositoryId, perCollectionLimit));
+            } catch (Exception e) {
+                log.debug("Skipping collection {} during search: {}", collection, e.getMessage());
+            }
         }
 
-        List<SearchResult> finalResults = new ArrayList<>(mergedMap.values());
-        finalResults.sort((a, b) -> Float.compare(b.getScore(), a.getScore()));
-        return finalResults.stream().limit(limit).toList();
+        results.sort(Comparator.comparing(SearchResult::getScore).reversed());
+        return results.stream().limit(limit).toList();
     }
 }

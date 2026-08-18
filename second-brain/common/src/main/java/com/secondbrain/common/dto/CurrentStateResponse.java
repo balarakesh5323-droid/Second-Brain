@@ -57,6 +57,10 @@ public class CurrentStateResponse {
     @Builder.Default
     private List<String> relevantEstablishedKnowledge = new ArrayList<>();
 
+    // Structured Next Action Recommendations
+    @Builder.Default
+    private List<NextActionRecommendation> nextRecommendedActions = new ArrayList<>();
+
     private String formattedBriefing;
 
     @Data
@@ -80,5 +84,17 @@ public class CurrentStateResponse {
         private String approach;
         private String errorMessage;
         private String lessonLearned;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class NextActionRecommendation {
+        private String priority; // CRITICAL, HIGH, MEDIUM, LOW
+        private String action;
+        private String reason;
+        @Builder.Default
+        private List<String> evidence = new ArrayList<>();
     }
 }
