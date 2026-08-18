@@ -20,13 +20,10 @@ public class ContextPackService {
     private final ProjectRepository projectRepository;
     private final AgentSessionRepository sessionRepository;
     private final AgentHandoffRepository handoffRepository;
-    private final AgentAttemptRepository attemptRepository;
-    private final DecisionRepository decisionRepository;
     private final TaskRepository taskRepository;
     private final AgentOutboxRepository outboxRepository;
-    private final SemanticSearchService semanticSearchService;
-    private final GraphService graphService;
     private final GitService gitService;
+    private final CandidateRetrievalService candidateRetrievalService;
     private final RelevanceScoringService relevanceScoringService;
 
     public Map<String, Object> assembleContextPack(String task, String repoIdOrPath, String projectId) {
@@ -74,7 +71,7 @@ public class ContextPackService {
             List<RepositoryEntity> projectRepos = repositoryRepository.findByProjectId(project.getId());
             for (RepositoryEntity r : projectRepos) {
                 if (primaryRepo != null && r.getId().equals(primaryRepo.getId())) {
-                    continue; // Skip primary repo (already in section 1)
+                    continue; // Skip primary repo
                 }
                 Map<String, Object> sib = new LinkedHashMap<>();
                 sib.put("id", r.getId().toString());
@@ -92,7 +89,7 @@ public class ContextPackService {
         }
         pack.put("siblingRepositories", siblingRepos);
 
-        // 3. Active Sessions on this Repository & Project
+        // 3. Active Sessions on this Repository
         List<Map<String, Object>> activeSessions = new ArrayList<>();
         if (primaryRepo != null) {
             var sessions = sessionRepository.findByRepositoryId(primaryRepo.getId());
@@ -130,19 +127,11 @@ public class ContextPackService {
 
         Set<String> taskTokens = relevanceScoringService.extractTokens(task);
 
-        // 5. Relevant Decisions (Deduplicated, Bounded Recent Candidate Pool & Multi-Signal Ranked)
-        Map<UUID, Decision> candidateDecisions = new LinkedHashMap<>();
-        if (primaryRepo != null) {
-            decisionRepository.findByRepositoryIdOrderByCreatedAtDesc(primaryRepo.getId(), org.springframework.data.domain.PageRequest.of(0, 50))
-                    .forEach(d -> candidateDecisions.put(d.getId(), d));
-        }
-        if (project != null) {
-            decisionRepository.findByProjectIdOrderByCreatedAtDesc(project.getId(), org.springframework.data.domain.PageRequest.of(0, 50))
-                    .forEach(d -> candidateDecisions.putIfAbsent(d.getId(), d));
-        }
-
+        // 5. Relevant Decisions (CandidateRetrievalService -> RelevanceScoringService -> Threshold Filter)
+        List<Decision> rawDecisionCandidates = candidateRetrievalService.getDecisionCandidates(task, primaryRepoId, activeProjectId);
         List<RelevanceScoringService.ScoredCandidate<Decision>> decisionCandidates = new ArrayList<>();
-        for (Decision d : candidateDecisions.values()) {
+
+        for (Decision d : rawDecisionCandidates) {
             String text = (d.getTitle() != null ? d.getTitle() : "") + " " + (d.getRationale() != null ? d.getRationale() : "");
             decisionCandidates.add(relevanceScoringService.scoreCandidate(
                     d, text, primaryRepoId, activeProjectId,
@@ -175,33 +164,23 @@ public class ContextPackService {
         }
         pack.put("relevantDecisions", relevantDecisions);
 
-        // 6. Relevant Failed Attempts (Deduplicated, Bounded Recent Candidate Pool & Multi-Signal Ranked)
-        Map<UUID, AgentAttempt> candidateAttempts = new LinkedHashMap<>();
-        if (primaryRepo != null) {
-            attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(primaryRepo.getId(), org.springframework.data.domain.PageRequest.of(0, 50))
-                    .forEach(a -> candidateAttempts.put(a.getId(), a));
-        }
-        if (project != null) {
-            attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId(), org.springframework.data.domain.PageRequest.of(0, 50))
-                    .forEach(a -> candidateAttempts.putIfAbsent(a.getId(), a));
-        }
-
+        // 6. Relevant Failed Attempts (CandidateRetrievalService -> RelevanceScoringService -> Threshold Filter)
+        List<AgentAttempt> rawFailureCandidates = candidateRetrievalService.getFailureCandidates(task, primaryRepoId, activeProjectId);
         List<RelevanceScoringService.ScoredCandidate<AgentAttempt>> failureCandidates = new ArrayList<>();
-        for (AgentAttempt a : candidateAttempts.values()) {
-            if ("FAILED".equalsIgnoreCase(a.getStatus()) || "FAILURE".equalsIgnoreCase(a.getStatus())) {
-                String fullText = (a.getApproach() != null ? a.getApproach() : "") + " "
-                        + (a.getErrorMessage() != null ? a.getErrorMessage() : "") + " "
-                        + (a.getLessonLearned() != null ? a.getLessonLearned() : "") + " "
-                        + (a.getTaskDescription() != null ? a.getTaskDescription() : "");
 
-                failureCandidates.add(relevanceScoringService.scoreCandidate(
-                        a, fullText, primaryRepoId, activeProjectId,
-                        a.getRepository() != null ? a.getRepository().getId() : null,
-                        a.getProject() != null ? a.getProject().getId() : null,
-                        a.getRepository() != null ? a.getRepository().getName() : (primaryRepo != null ? primaryRepo.getName() : null),
-                        a.getCreatedAt(), taskTokens
-                ));
-            }
+        for (AgentAttempt a : rawFailureCandidates) {
+            String fullText = (a.getApproach() != null ? a.getApproach() : "") + " "
+                    + (a.getErrorMessage() != null ? a.getErrorMessage() : "") + " "
+                    + (a.getLessonLearned() != null ? a.getLessonLearned() : "") + " "
+                    + (a.getTaskDescription() != null ? a.getTaskDescription() : "");
+
+            failureCandidates.add(relevanceScoringService.scoreCandidate(
+                    a, fullText, primaryRepoId, activeProjectId,
+                    a.getRepository() != null ? a.getRepository().getId() : null,
+                    a.getProject() != null ? a.getProject().getId() : null,
+                    a.getRepository() != null ? a.getRepository().getName() : (primaryRepo != null ? primaryRepo.getName() : null),
+                    a.getCreatedAt(), taskTokens
+            ));
         }
 
         List<RelevanceScoringService.ScoredCandidate<AgentAttempt>> rankedFailures = relevanceScoringService.rankAndFilter(
@@ -227,52 +206,41 @@ public class ContextPackService {
         }
         pack.put("relevantFailures", relevantFailures);
 
-        // 7. Relevant Code Symbols (Vector search + Unified Scorer)
+        // 7. Relevant Code Symbols (CandidateRetrievalService -> RelevanceScoringService -> Threshold Filter)
+        List<SearchResult> rawSymbols = candidateRetrievalService.getSymbolCandidates(task, primaryRepoId, activeProjectId);
+        List<RelevanceScoringService.ScoredCandidate<SearchResult>> scoredSymbols = new ArrayList<>();
+
+        for (SearchResult sr : rawSymbols) {
+            scoredSymbols.add(relevanceScoringService.scoreSymbolCandidate(
+                    sr, primaryRepoId, activeProjectId,
+                    primaryRepo != null ? primaryRepo.getName() : null,
+                    taskTokens
+            ));
+        }
+
+        List<RelevanceScoringService.ScoredCandidate<SearchResult>> rankedSymbols = relevanceScoringService.rankAndFilter(
+                scoredSymbols, RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
+        );
+
         List<Map<String, Object>> relevantSymbols = new ArrayList<>();
-        if (task != null && !task.isBlank()) {
-            try {
-                String repoScope = primaryRepo != null ? primaryRepo.getId().toString() : null;
-                List<SearchResult> symbolResults = semanticSearchService.searchScoped(task, "symbol_knowledge", null, repoScope, 10);
-                List<RelevanceScoringService.ScoredCandidate<SearchResult>> scoredSymbols = new ArrayList<>();
-                for (SearchResult sr : symbolResults) {
-                    scoredSymbols.add(relevanceScoringService.scoreSymbolCandidate(
-                            sr, primaryRepoId, activeProjectId,
-                            primaryRepo != null ? primaryRepo.getName() : null,
-                            taskTokens
-                    ));
-                }
-                List<RelevanceScoringService.ScoredCandidate<SearchResult>> rankedSymbols = relevanceScoringService.rankAndFilter(
-                        scoredSymbols, RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
-                );
-                for (var scored : rankedSymbols) {
-                    SearchResult sr = scored.getItem();
-                    Map<String, Object> sym = new LinkedHashMap<>();
-                    sym.put("relevance", scored.getRelevance());
-                    sym.put("scope", scored.getScope());
-                    sym.put("reason", scored.getReason());
-                    if (sr.getPayload() != null) {
-                        sym.put("name", sr.getPayload().get("name"));
-                        sym.put("file", sr.getPayload().get("file"));
-                        sym.put("type", sr.getPayload().get("type"));
-                        sym.put("signature", sr.getPayload().get("signature"));
-                    }
-                    relevantSymbols.add(sym);
-                }
-            } catch (Exception e) {
-                log.warn("Failed searching symbols for context pack: {}", e.getMessage());
+        for (var scored : rankedSymbols) {
+            SearchResult sr = scored.getItem();
+            Map<String, Object> sym = new LinkedHashMap<>();
+            sym.put("relevance", scored.getRelevance());
+            sym.put("scope", scored.getScope());
+            sym.put("reason", scored.getReason());
+            if (sr.getPayload() != null) {
+                sym.put("name", sr.getPayload().get("name"));
+                sym.put("file", sr.getPayload().get("file"));
+                sym.put("type", sr.getPayload().get("type"));
+                sym.put("signature", sr.getPayload().get("signature"));
             }
+            relevantSymbols.add(sym);
         }
         pack.put("relevantSymbols", relevantSymbols);
 
         // 8. Graph-RAG Structural Subgraph
-        List<Map<String, Object>> relevantGraph = new ArrayList<>();
-        try {
-            if (primaryRepo != null) {
-                relevantGraph = graphService.findRelated("Repository", primaryRepo.getId().toString(), null, 2);
-            }
-        } catch (Exception e) {
-            log.warn("Failed fetching graph context: {}", e.getMessage());
-        }
+        List<Map<String, Object>> relevantGraph = candidateRetrievalService.getGraphNeighborhood(primaryRepoId, 2);
         pack.put("relevantGraph", relevantGraph.stream().limit(10).toList());
 
         // 9. Open Tasks
