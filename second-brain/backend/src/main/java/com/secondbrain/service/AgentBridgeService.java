@@ -815,7 +815,6 @@ public class AgentBridgeService {
 
         Decision savedDecision = null;
         if (payload.getProblem() != null) {
-            problemsGraph.add(payload.getProblem());
             eventDescription = "Problem discovered: " + payload.getProblem().getOrDefault("title", "Problem");
         }
 
@@ -863,7 +862,6 @@ public class AgentBridgeService {
         }
 
         if (payload.getCommit() != null) {
-            commitsGraph.add(payload.getCommit());
             eventDescription = "Commit produced: " + payload.getCommit().getOrDefault("hash", "commit");
         }
 
@@ -882,7 +880,26 @@ public class AgentBridgeService {
                 .filePath(payload.getFilePath())
                 .processingStatus("COMPLETED")
                 .build();
-        eventRepository.save(agentEvt);
+        agentEvt = eventRepository.save(agentEvt);
+
+        if (payload.getProblem() != null) {
+            Map<String, Object> probGraph = new HashMap<>(payload.getProblem());
+            probGraph.put("id", "prob::" + agentEvt.getId().toString());
+            problemsGraph.add(probGraph);
+        }
+
+        if (payload.getCommit() != null) {
+            Map<String, Object> c = new HashMap<>(payload.getCommit());
+            String hash = (String) c.get("hash");
+            if (hash == null || hash.isBlank()) {
+                hash = (String) c.get("sha");
+            }
+            if (hash == null || hash.isBlank()) {
+                hash = "c::" + agentEvt.getId().toString();
+            }
+            c.put("hash", hash);
+            commitsGraph.add(c);
+        }
 
         // 1. Enqueue Outbox for Decision Vectorization
         if (savedDecision != null) {

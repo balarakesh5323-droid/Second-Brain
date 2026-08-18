@@ -59,7 +59,12 @@ public class OutboxProjectionService {
                 .nextRetryAt(LocalDateTime.now())
                 .build();
 
-        return outboxRepository.save(outbox);
+        try {
+            return outboxRepository.save(outbox);
+        } catch (Exception e) {
+            return outboxRepository.findByIdempotencyKey(idempotencyKey)
+                    .orElseThrow(() -> new IllegalStateException("Failed to persist outbox record: " + idempotencyKey, e));
+        }
     }
 
     @Transactional
@@ -80,7 +85,9 @@ public class OutboxProjectionService {
         List<AgentOutbox> stuck = outboxRepository.findStuckProcessing(OutboxStatus.PROCESSING, threshold);
         for (AgentOutbox item : stuck) {
             item.setStatus(OutboxStatus.PENDING);
-            item.setLastError("Processing timeout recovery - reset to PENDING");
+            int attempts = item.getRetryCount() + 1;
+            item.setRetryCount(attempts);
+            item.setLastError("Processing timeout recovery - reset to PENDING (attempt " + attempts + ")");
             item.setNextRetryAt(LocalDateTime.now());
             item.setProcessingStartedAt(null);
             outboxRepository.save(item);
@@ -96,6 +103,10 @@ public class OutboxProjectionService {
         AgentOutbox outbox = outboxRepository.findById(outboxId).orElse(null);
         if (outbox == null) return false;
         if (outbox.getStatus() == OutboxStatus.COMPLETED) return true;
+        if (outbox.getStatus() != OutboxStatus.PROCESSING) {
+            log.warn("Cannot execute outbox projection for {} (id: {}) with status {}", outbox.getTarget(), outbox.getId(), outbox.getStatus());
+            return false;
+        }
 
         try {
             if (outbox.getTarget() == OutboxTarget.NEO4J) {
