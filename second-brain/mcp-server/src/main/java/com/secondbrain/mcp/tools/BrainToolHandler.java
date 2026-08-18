@@ -47,6 +47,7 @@ public class BrainToolHandler {
     private final com.secondbrain.service.CodeReviewService codeReviewService;
     private final com.secondbrain.service.DiagramIngestionService diagramIngestionService;
     private final com.secondbrain.service.ContextPackService contextPackService;
+    private final com.secondbrain.service.MemoryConsolidationService memoryConsolidationService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -904,6 +905,17 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Failed to retrieve agent timeline", e);
             return new CallToolResult(List.of(new TextContent("Error fetching agent timeline: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleConsolidateMemories() {
+        try {
+            Map<String, Object> report = memoryConsolidationService.runConsolidationCycle();
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(report);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Failed running memory consolidation cycle", e);
+            return new CallToolResult(List.of(new TextContent("Error running memory consolidation: " + e.getMessage())), true);
         }
     }
 

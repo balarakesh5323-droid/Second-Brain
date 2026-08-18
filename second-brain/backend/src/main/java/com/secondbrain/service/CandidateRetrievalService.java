@@ -36,94 +36,111 @@ public class CandidateRetrievalService {
 
     /**
      * Hybrid Candidate Retrieval for Decisions (v2):
-     * Guarantees independent quotas for recent temporal decisions and historical semantic vector hits.
+     * Retrieves candidates into independent buckets (recent repo, recent project, semantic repo, semantic project),
+     * guarantees zero starvation, and deduplicates across all streams.
      */
     public List<Decision> getDecisionCandidates(String task, UUID repoId, UUID projectId) {
-        Map<UUID, Decision> candidateMap = new LinkedHashMap<>();
         String repoStr = repoId != null ? repoId.toString() : null;
         String projStr = projectId != null ? projectId.toString() : null;
 
-        // 1. Recent Stream (PostgreSQL: Repo & Project)
+        List<Decision> recentRepoList = new ArrayList<>();
+        List<Decision> recentProjectList = new ArrayList<>();
+        List<Decision> semanticRepoList = new ArrayList<>();
+        List<Decision> semanticProjectList = new ArrayList<>();
+
+        // Bucket 1: Recent Repo Stream (PostgreSQL)
         if (repoId != null) {
-            decisionRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, RECENT_REPO_QUOTA))
-                    .forEach(d -> candidateMap.put(d.getId(), d));
-        }
-        if (projectId != null) {
-            decisionRepository.findByProjectIdOrderByCreatedAtDesc(projectId, PageRequest.of(0, RECENT_PROJECT_QUOTA))
-                    .forEach(d -> candidateMap.putIfAbsent(d.getId(), d));
+            recentRepoList = decisionRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, RECENT_REPO_QUOTA));
         }
 
-        // 2. Semantic Stream (Qdrant Vector Store: Repo & Project Scope-Aware)
+        // Bucket 2: Recent Project Stream (PostgreSQL)
+        if (projectId != null) {
+            recentProjectList = decisionRepository.findByProjectIdOrderByCreatedAtDesc(projectId, PageRequest.of(0, RECENT_PROJECT_QUOTA));
+        }
+
+        // Bucket 3 & 4: Semantic Repo & Project Streams (Qdrant Vector Store)
         if (task != null && !task.isBlank()) {
             try {
-                // Tier A: Repository-scoped semantic search
                 if (repoStr != null) {
                     List<SearchResult> repoMatches = semanticSearchService.searchScoped(
                             task, "technical_memory", projStr, repoStr, SEMANTIC_REPO_QUOTA
                     );
-                    addDecisionMatches(repoMatches, candidateMap);
+                    semanticRepoList = resolveDecisionsFromSearchResults(repoMatches, SEMANTIC_REPO_QUOTA);
                 }
 
-                // Tier B: Project-wide semantic search (discovers sibling repo decisions)
                 if (projStr != null) {
                     List<SearchResult> projMatches = semanticSearchService.searchScoped(
                             task, "technical_memory", projStr, null, SEMANTIC_PROJECT_QUOTA
                     );
-                    addDecisionMatches(projMatches, candidateMap);
+                    semanticProjectList = resolveDecisionsFromSearchResults(projMatches, SEMANTIC_PROJECT_QUOTA);
                 }
             } catch (Exception e) {
                 log.debug("Semantic decision retrieval skipped: {}", e.getMessage());
             }
         }
 
+        // Deduplicate across all independent buckets preserving priority order
+        Map<UUID, Decision> candidateMap = new LinkedHashMap<>();
+        for (Decision d : recentRepoList) candidateMap.put(d.getId(), d);
+        for (Decision d : semanticRepoList) candidateMap.putIfAbsent(d.getId(), d);
+        for (Decision d : recentProjectList) candidateMap.putIfAbsent(d.getId(), d);
+        for (Decision d : semanticProjectList) candidateMap.putIfAbsent(d.getId(), d);
+
         return new ArrayList<>(candidateMap.values());
     }
 
     /**
      * Hybrid Candidate Retrieval for Failed Attempts (v2):
-     * Guarantees independent quotas for recent failures and historical semantic failure records.
+     * Retrieves failure candidates into independent buckets and deduplicates without stream starvation.
      */
     public List<AgentAttempt> getFailureCandidates(String task, UUID repoId, UUID projectId) {
-        Map<UUID, AgentAttempt> candidateMap = new LinkedHashMap<>();
         String repoStr = repoId != null ? repoId.toString() : null;
         String projStr = projectId != null ? projectId.toString() : null;
 
-        // 1. Recent Stream (PostgreSQL)
+        List<AgentAttempt> recentRepoList = new ArrayList<>();
+        List<AgentAttempt> recentProjectList = new ArrayList<>();
+        List<AgentAttempt> semanticRepoList = new ArrayList<>();
+        List<AgentAttempt> semanticProjectList = new ArrayList<>();
+
+        // Bucket 1: Recent Repo Failures (PostgreSQL)
         if (repoId != null) {
-            attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, RECENT_REPO_QUOTA))
-                    .forEach(a -> {
-                        if (isFailure(a)) candidateMap.put(a.getId(), a);
-                    });
-        }
-        if (projectId != null) {
-            attemptRepository.findByProjectIdOrderByCreatedAtDesc(projectId, PageRequest.of(0, RECENT_PROJECT_QUOTA))
-                    .forEach(a -> {
-                        if (isFailure(a)) candidateMap.putIfAbsent(a.getId(), a);
-                    });
+            recentRepoList = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, RECENT_REPO_QUOTA))
+                    .stream().filter(this::isFailure).toList();
         }
 
-        // 2. Semantic Stream (Qdrant Vector Store: Repo & Project-wide)
+        // Bucket 2: Recent Project Failures (PostgreSQL)
+        if (projectId != null) {
+            recentProjectList = attemptRepository.findByProjectIdOrderByCreatedAtDesc(projectId, PageRequest.of(0, RECENT_PROJECT_QUOTA))
+                    .stream().filter(this::isFailure).toList();
+        }
+
+        // Bucket 3 & 4: Semantic Repo & Project Failures (Qdrant Vector Store)
         if (task != null && !task.isBlank()) {
             try {
-                // Tier A: Repository-scoped failure search
                 if (repoStr != null) {
                     List<SearchResult> repoMatches = semanticSearchService.searchScoped(
                             task, "agent_memory", projStr, repoStr, SEMANTIC_REPO_QUOTA
                     );
-                    addFailureMatches(repoMatches, candidateMap);
+                    semanticRepoList = resolveFailuresFromSearchResults(repoMatches, SEMANTIC_REPO_QUOTA);
                 }
 
-                // Tier B: Project-wide failure search (cross-repo failure intelligence)
                 if (projStr != null) {
                     List<SearchResult> projMatches = semanticSearchService.searchScoped(
                             task, "agent_memory", projStr, null, SEMANTIC_PROJECT_QUOTA
                     );
-                    addFailureMatches(projMatches, candidateMap);
+                    semanticProjectList = resolveFailuresFromSearchResults(projMatches, SEMANTIC_PROJECT_QUOTA);
                 }
             } catch (Exception e) {
                 log.debug("Semantic failure retrieval skipped: {}", e.getMessage());
             }
         }
+
+        // Deduplicate across all independent buckets
+        Map<UUID, AgentAttempt> candidateMap = new LinkedHashMap<>();
+        for (AgentAttempt a : recentRepoList) candidateMap.put(a.getId(), a);
+        for (AgentAttempt a : semanticRepoList) candidateMap.putIfAbsent(a.getId(), a);
+        for (AgentAttempt a : recentProjectList) candidateMap.putIfAbsent(a.getId(), a);
+        for (AgentAttempt a : semanticProjectList) candidateMap.putIfAbsent(a.getId(), a);
 
         return new ArrayList<>(candidateMap.values());
     }
@@ -181,26 +198,30 @@ public class CandidateRetrievalService {
         }
     }
 
-    private void addDecisionMatches(List<SearchResult> matches, Map<UUID, Decision> candidateMap) {
+    private List<Decision> resolveDecisionsFromSearchResults(List<SearchResult> matches, int limit) {
+        List<Decision> results = new ArrayList<>();
         for (SearchResult sr : matches) {
-            if (candidateMap.size() >= MAX_DECISION_BUDGET) break;
+            if (results.size() >= limit) break;
             UUID decisionId = extractEntityId(sr, "decisionId");
-            if (decisionId != null && !candidateMap.containsKey(decisionId)) {
-                decisionRepository.findById(decisionId).ifPresent(d -> candidateMap.put(d.getId(), d));
+            if (decisionId != null) {
+                decisionRepository.findById(decisionId).ifPresent(results::add);
             }
         }
+        return results;
     }
 
-    private void addFailureMatches(List<SearchResult> matches, Map<UUID, AgentAttempt> candidateMap) {
+    private List<AgentAttempt> resolveFailuresFromSearchResults(List<SearchResult> matches, int limit) {
+        List<AgentAttempt> results = new ArrayList<>();
         for (SearchResult sr : matches) {
-            if (candidateMap.size() >= MAX_FAILURE_BUDGET) break;
+            if (results.size() >= limit) break;
             UUID attemptId = extractEntityId(sr, "attemptId");
-            if (attemptId != null && !candidateMap.containsKey(attemptId)) {
+            if (attemptId != null) {
                 attemptRepository.findById(attemptId).ifPresent(a -> {
-                    if (isFailure(a)) candidateMap.put(a.getId(), a);
+                    if (isFailure(a)) results.add(a);
                 });
             }
         }
+        return results;
     }
 
     private boolean isFailure(AgentAttempt a) {

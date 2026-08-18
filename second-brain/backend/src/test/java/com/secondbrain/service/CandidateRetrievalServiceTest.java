@@ -126,6 +126,51 @@ class CandidateRetrievalServiceTest {
     }
 
     @Test
+    @DisplayName("Symmetry Benchmark: Recent highly relevant decision beats old weakly relevant decision")
+    void testRecentHighlyRelevantBeatsOldWeaklyRelevant() {
+        UUID repoId = UUID.randomUUID();
+        UUID projId = UUID.randomUUID();
+
+        // Recent highly relevant decision (created 1 hour ago)
+        UUID recentId = UUID.randomUUID();
+        Decision recentDecision = Decision.builder()
+                .title("Redis Token Revocation Cluster Configuration")
+                .rationale("Redis cluster token blacklist configuration with automatic failover")
+                .build();
+        recentDecision.setId(recentId);
+        recentDecision.setCreatedAt(LocalDateTime.now().minusHours(1));
+
+        // Old weakly relevant decision (created 1 year ago)
+        UUID oldId = UUID.randomUUID();
+        Decision oldDecision = Decision.builder()
+                .title("General Redis Cache Eviction Policy")
+                .rationale("LRU cache eviction for static product catalogue")
+                .build();
+        oldDecision.setId(oldId);
+        oldDecision.setCreatedAt(LocalDateTime.now().minusYears(1));
+
+        Set<String> taskTokens = scoringService.extractTokens("Redis Token Revocation");
+        var scoredRecent = scoringService.scoreCandidate(
+                recentDecision, recentDecision.getTitle() + " " + recentDecision.getRationale(),
+                repoId, projId, repoId, projId, "auth-repo", recentDecision.getCreatedAt(), taskTokens
+        );
+        var scoredOld = scoringService.scoreCandidate(
+                oldDecision, oldDecision.getTitle() + " " + oldDecision.getRationale(),
+                repoId, projId, repoId, projId, "auth-repo", oldDecision.getCreatedAt(), taskTokens
+        );
+
+        List<RelevanceScoringService.ScoredCandidate<Decision>> ranked = scoringService.rankAndFilter(
+                List.of(scoredOld, scoredRecent), RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
+        );
+
+        // Recent highly relevant decision must rank #1 with top relevance score (> 0.90)
+        assertThat(ranked).isNotEmpty();
+        assertThat(ranked.get(0).getItem().getId()).isEqualTo(recentId);
+        assertThat(ranked.get(0).getRelevance()).isGreaterThan(0.90);
+        assertThat(ranked.get(0).getRelevance()).isGreaterThan(scoredOld.getRelevance());
+    }
+
+    @Test
     @DisplayName("Failures: Combines recent failed attempts and filters out successful runs")
     void testGetFailureCandidatesHybrid() {
         UUID repoId = UUID.randomUUID();

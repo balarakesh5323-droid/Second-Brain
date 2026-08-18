@@ -502,7 +502,12 @@ public class SecondBrainMcpServer {
                     String repo = (String) args.get("repo");
                     int limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : 10;
                     return toolHandler.handleGetAgentTimeline(repo, limit);
-                })
+                }),
+
+            buildTool("brain_consolidate_memories",
+                "Trigger autonomous memory consolidation — discovers recurring architectural decisions, failure anti-patterns, developer preferences, resolves contradictions, and compounds confidence.",
+                "object", Map.of(), List.of(),
+                (exchange, args) -> toolHandler.handleConsolidateMemories())
         );
     }
 

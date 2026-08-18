@@ -5,5 +5,7 @@ public enum MemoryType {
     SEMANTIC,
     PROCEDURAL,
     EPISODIC,
-    DECLARATIVE
+    DECLARATIVE,
+    ARCHITECTURAL,
+    PREFERENCE
 }

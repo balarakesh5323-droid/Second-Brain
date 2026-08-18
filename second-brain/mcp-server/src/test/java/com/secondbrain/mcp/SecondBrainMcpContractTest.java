@@ -89,7 +89,8 @@ class SecondBrainMcpContractTest {
                 "brain_ingest_diagram",
                 "brain_workspace_state",
                 "brain_context_pack",
-                "brain_get_agent_timeline"
+                "brain_get_agent_timeline",
+                "brain_consolidate_memories"
         );
 
         for (String expected : expectedTools) {
