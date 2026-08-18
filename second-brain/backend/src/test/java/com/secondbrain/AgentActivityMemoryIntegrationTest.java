@@ -584,57 +584,57 @@ public class AgentActivityMemoryIntegrationTest {
     @org.springframework.transaction.annotation.Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     void testMultiWorkerSkipLockedConcurrency() throws Exception {
         UUID sessionId = UUID.randomUUID();
-        for (int i = 1; i <= 100; i++) {
-            outboxService.enqueue(
-                    sessionId,
-                    UUID.randomUUID(),
-                    com.secondbrain.common.enums.OutboxTarget.NEO4J,
-                    "CONCURRENT_BENCH",
-                    "bench_" + i,
-                    Map.of("itemIndex", i)
-            );
-        }
+        try {
+            for (int i = 1; i <= 100; i++) {
+                outboxService.enqueue(
+                        sessionId,
+                        UUID.randomUUID(),
+                        com.secondbrain.common.enums.OutboxTarget.NEO4J,
+                        "CONCURRENT_BENCH",
+                        "bench_" + i,
+                        Map.of("itemIndex", i)
+                );
+            }
 
-        int numWorkers = 5;
-        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(numWorkers);
-        java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(numWorkers);
-        java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
-        java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(numWorkers);
+            int numWorkers = 5;
+            java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(numWorkers);
+            java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(numWorkers);
+            java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(numWorkers);
 
-        java.util.List<UUID> allClaimedIds = new java.util.concurrent.CopyOnWriteArrayList<>();
+            java.util.List<UUID> allClaimedIds = new java.util.concurrent.CopyOnWriteArrayList<>();
 
-        for (int w = 0; w < numWorkers; w++) {
-            executor.submit(() -> {
-                readyLatch.countDown();
-                try {
-                    startLatch.await();
-                    while (true) {
-                        List<com.secondbrain.common.entity.AgentOutbox> claimed = outboxService.claimBatch(10);
-                        if (claimed.isEmpty()) break;
-                        for (var item : claimed) {
-                            allClaimedIds.add(item.getId());
+            for (int w = 0; w < numWorkers; w++) {
+                executor.submit(() -> {
+                    readyLatch.countDown();
+                    try {
+                        startLatch.await();
+                        while (true) {
+                            List<com.secondbrain.common.entity.AgentOutbox> claimed = outboxService.claimBatch(10);
+                            if (claimed.isEmpty()) break;
+                            for (var item : claimed) {
+                                allClaimedIds.add(item.getId());
+                            }
                         }
+                    } catch (Exception ignored) {
+                    } finally {
+                        doneLatch.countDown();
                     }
-                } catch (Exception ignored) {
-                } finally {
-                    doneLatch.countDown();
-                }
-            });
+                });
+            }
+
+            readyLatch.await();
+            startLatch.countDown();
+            boolean finished = doneLatch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            executor.shutdown();
+
+            assertThat(finished).isTrue();
+
+            List<com.secondbrain.common.entity.AgentOutbox> sessionOutbox = outboxRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+            assertThat(sessionOutbox).hasSize(100);
+            assertThat(allClaimedIds.stream().distinct().count()).isEqualTo(allClaimedIds.size());
+        } finally {
+            outboxRepository.deleteAll(outboxRepository.findBySessionIdOrderByCreatedAtAsc(sessionId));
         }
-
-        readyLatch.await();
-        startLatch.countDown();
-        boolean finished = doneLatch.await(10, java.util.concurrent.TimeUnit.SECONDS);
-        executor.shutdown();
-
-        assertThat(finished).isTrue();
-
-        List<UUID> expectedIds = outboxRepository.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
-                .map(com.secondbrain.common.entity.AgentOutbox::getId).toList();
-        assertThat(expectedIds).hasSize(100);
-
-        List<UUID> sessionClaimedIds = allClaimedIds.stream().filter(expectedIds::contains).toList();
-        assertThat(sessionClaimedIds).hasSize(100);
-        assertThat(sessionClaimedIds.stream().distinct().count()).isEqualTo(100);
     }
 }

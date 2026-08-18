@@ -46,6 +46,7 @@ public class BrainToolHandler {
     private final com.secondbrain.service.ImpactAnalysisService impactAnalysisService;
     private final com.secondbrain.service.CodeReviewService codeReviewService;
     private final com.secondbrain.service.DiagramIngestionService diagramIngestionService;
+    private final com.secondbrain.service.ContextPackService contextPackService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -876,6 +877,28 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Failed to retrieve workspace state", e);
             return new CallToolResult(List.of(new TextContent("Error fetching workspace state: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleContextPack(String task, String repository, String project) {
+        try {
+            Map<String, Object> pack = contextPackService.assembleContextPack(task, repository, project);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(pack);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Failed to assemble context pack", e);
+            return new CallToolResult(List.of(new TextContent("Error assembling context pack: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetAgentTimeline(String repo, int limit) {
+        try {
+            List<Map<String, Object>> timeline = graphService.getAgentTimeline(repo, limit);
+            String json = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(timeline);
+            return new CallToolResult(List.of(new TextContent(json)), false);
+        } catch (Exception e) {
+            log.error("Failed to retrieve agent timeline", e);
+            return new CallToolResult(List.of(new TextContent("Error fetching agent timeline: " + e.getMessage())), true);
         }
     }
 

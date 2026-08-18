@@ -459,6 +459,32 @@ public class SecondBrainMcpServer {
                     String project = (String) args.get("project");
                     String repo = (String) args.get("repository");
                     return toolHandler.handleWorkspaceState(project, repo);
+                }),
+
+            buildTool("brain_context_pack",
+                "Flagship 1-Shot Multi-Modal Context Pack: Assembles task scope, git status, active sessions, latest handoff, relevant decisions, failure avoidance lessons, AST code symbols, graph subgraphs, open tasks, automated warnings, and recommended next actions.",
+                "object", Map.of(
+                    "task", Map.of("type", "string", "description", "Engineering task or goal"),
+                    "repository", Map.of("type", "string", "description", "Optional repository name, ID or path"),
+                    "project", Map.of("type", "string", "description", "Optional project name or UUID")
+                ), List.of(),
+                (exchange, args) -> {
+                    String task = (String) args.get("task");
+                    String repo = (String) args.get("repository");
+                    String project = (String) args.get("project");
+                    return toolHandler.handleContextPack(task, repo, project);
+                }),
+
+            buildTool("brain_get_agent_timeline",
+                "Retrieve chronological timeline of agent sessions, decisions, problems, failures, and handoffs across repositories or scoped to a specific repository.",
+                "object", Map.of(
+                    "repo", Map.of("type", "string", "description", "Optional repository name or ID filter"),
+                    "limit", Map.of("type", "integer", "description", "Max sessions to return (default 10)")
+                ), List.of(),
+                (exchange, args) -> {
+                    String repo = (String) args.get("repo");
+                    int limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : 10;
+                    return toolHandler.handleGetAgentTimeline(repo, limit);
                 })
         );
     }

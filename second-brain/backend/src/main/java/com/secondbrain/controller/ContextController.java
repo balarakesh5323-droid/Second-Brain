@@ -19,6 +19,26 @@ import java.util.Map;
 public class ContextController {
 
     private final ContextAssemblyService contextAssemblyService;
+    private final com.secondbrain.service.ContextPackService contextPackService;
+
+    @GetMapping("/pack")
+    public ResponseEntity<Map<String, Object>> getContextPack(
+            @RequestParam(required = false) String task,
+            @RequestParam(required = false) String repository,
+            @RequestParam(required = false) String project) {
+        log.info("Getting 1-Shot Context Pack for task: '{}', repo: '{}'", task, repository);
+        Map<String, Object> pack = contextPackService.assembleContextPack(task, repository, project);
+        return ResponseEntity.ok(pack);
+    }
+
+    @PostMapping("/pack")
+    public ResponseEntity<Map<String, Object>> postContextPack(@RequestBody Map<String, String> request) {
+        String task = request.getOrDefault("task", request.get("query"));
+        String repository = request.get("repository");
+        String project = request.get("project");
+        Map<String, Object> pack = contextPackService.assembleContextPack(task, repository, project);
+        return ResponseEntity.ok(pack);
+    }
 
     @PostMapping("/assemble")
     public ResponseEntity<ContextResponse> assembleContext(@RequestBody Map<String, String> request) {
