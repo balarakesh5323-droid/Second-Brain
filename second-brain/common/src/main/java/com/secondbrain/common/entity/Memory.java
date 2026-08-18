@@ -61,7 +61,7 @@ public class Memory extends BaseEntity {
     @JoinColumn(name = "repository_id")
     private RepositoryEntity repository;
 
-    @ElementCollection(fetch = FetchType.LAZY)
+    @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "memory_tags", joinColumns = @JoinColumn(name = "memory_id"))
     @Column(name = "tag")
     @Builder.Default
@@ -104,7 +104,7 @@ public class Memory extends BaseEntity {
     @Column(name = "memory_key", unique = true, length = 255)
     private String memoryKey;
 
-    @ElementCollection(fetch = FetchType.LAZY)
+    @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "memory_evidence_sources", joinColumns = @JoinColumn(name = "memory_id"))
     @Column(name = "evidence_source")
     @Builder.Default

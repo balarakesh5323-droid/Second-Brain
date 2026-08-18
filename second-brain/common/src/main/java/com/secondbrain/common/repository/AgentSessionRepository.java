@@ -28,7 +28,7 @@ public interface AgentSessionRepository extends JpaRepository<AgentSession, UUID
     @org.springframework.data.jpa.repository.Query("SELECT s FROM AgentSession s WHERE s.id = :id")
     java.util.Optional<AgentSession> findByIdForUpdate(@org.springframework.data.repository.query.Param("id") UUID id);
 
-    @org.springframework.data.jpa.repository.Query("SELECT s FROM AgentSession s WHERE s.status = :status AND (:after IS NULL OR s.createdAt > :after OR (s.createdAt = :after AND s.id > :lastId)) ORDER BY s.createdAt ASC, s.id ASC")
+    @org.springframework.data.jpa.repository.Query("SELECT s FROM AgentSession s LEFT JOIN FETCH s.agent LEFT JOIN FETCH s.repository LEFT JOIN FETCH s.project WHERE s.status = :status AND (:after IS NULL OR s.createdAt > :after OR (s.createdAt = :after AND s.id > :lastId)) ORDER BY s.createdAt ASC, s.id ASC")
     List<AgentSession> findIncrementalSessions(@org.springframework.data.repository.query.Param("status") String status,
                                                @org.springframework.data.repository.query.Param("after") java.time.LocalDateTime after,
                                                @org.springframework.data.repository.query.Param("lastId") UUID lastId,

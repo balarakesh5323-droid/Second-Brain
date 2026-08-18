@@ -24,7 +24,7 @@ public interface DecisionRepository extends JpaRepository<Decision, UUID> {
 
     List<Decision> findTop10ByOrderByCreatedAtDesc();
 
-    @org.springframework.data.jpa.repository.Query("SELECT d FROM Decision d WHERE (:after IS NULL OR d.createdAt > :after OR (d.createdAt = :after AND d.id > :lastId)) ORDER BY d.createdAt ASC, d.id ASC")
+    @org.springframework.data.jpa.repository.Query("SELECT d FROM Decision d LEFT JOIN FETCH d.project LEFT JOIN FETCH d.repository WHERE (:after IS NULL OR d.createdAt > :after OR (d.createdAt = :after AND d.id > :lastId)) ORDER BY d.createdAt ASC, d.id ASC")
     List<Decision> findIncremental(@org.springframework.data.repository.query.Param("after") java.time.LocalDateTime after,
                                    @org.springframework.data.repository.query.Param("lastId") UUID lastId,
                                    org.springframework.data.domain.Pageable pageable);

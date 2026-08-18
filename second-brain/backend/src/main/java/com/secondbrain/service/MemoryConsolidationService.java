@@ -30,6 +30,7 @@ public class MemoryConsolidationService {
     private final AgentSessionRepository sessionRepository;
     private final ConsolidationCheckpointRepository checkpointRepository;
     private final SemanticSearchService semanticSearchService;
+    private final SemanticKnowledgeSynthesisService semanticKnowledgeSynthesisService;
     private final OutboxProjectionService outboxService;
     private final ConsolidationLockService lockService;
 
@@ -112,69 +113,11 @@ public class MemoryConsolidationService {
             String projectKey = parts[0];
             String topic = parts[1];
 
-            String memoryKey = "ARCHITECTURAL_STANDARD:" + projectKey + ":" + topic.toUpperCase();
-            Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
-
-            if (existingOpt.isPresent()) {
-                // Update existing consolidated memory with new evidence idempotently
-                Memory memory = existingOpt.get();
-                int newEvidence = 0;
-                for (Decision d : cluster) {
-                    if (d.getId() != null && memory.getEvidenceSources().add("decision:" + d.getId())) {
-                        newEvidence++;
-                    }
-                }
-                if (newEvidence > 0) {
-                    memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 0) + newEvidence);
-                    memory.setEvidenceCount(memory.getEvidenceSources().size());
-                    memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.92));
-                    if (memory.getEvidenceSources().size() >= 3) {
-                        memory.setStatus(MemoryStatus.ESTABLISHED);
-                    } else {
-                        memory.setStatus(MemoryStatus.CONFIRMED);
-                    }
-                    memory.setLastSeenAt(LocalDateTime.now());
-                    memoryRepository.save(memory);
-                    enqueueOutboxProjections(memory);
-                }
-                synthesized++;
-            } else if (cluster.size() >= 2 || hasStrongSemanticClusterMatches(topic, projectKey)) {
-                // Synthesize new architectural standard
-                Decision sample = cluster.get(0);
-                String content = String.format(
-                        "Architectural Standard [%s]: Established pattern '%s'.",
-                        topic, sample.getTitle()
-                );
-
-                Set<String> evidence = new HashSet<>();
-                for (Decision d : cluster) {
-                    if (d.getId() != null) evidence.add("decision:" + d.getId());
-                }
-
-                MemoryStatus status = (cluster.size() >= 3) ? MemoryStatus.ESTABLISHED
-                        : (cluster.size() >= 2 ? MemoryStatus.CONFIRMED : MemoryStatus.PROPOSED);
-
-                Memory memory = Memory.builder()
-                        .memoryKey(memoryKey)
-                        .content(content)
-                        .type(MemoryType.ARCHITECTURAL)
-                        .scope(sample.getProject() != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
-                        .project(sample.getProject())
-                        .repository(sample.getRepository())
-                        .status(status)
-                        .confidence(calculateDiversityConfidence(evidence.size(), 0.90))
-                        .importance(0.88)
-                        .observationCount(cluster.size())
-                        .evidenceCount(evidence.size())
-                        .evidenceSources(evidence)
-                        .provenanceSource("MULTI_AGENT_CONSENSUS")
-                        .tags(new HashSet<>(Set.of(topic.toLowerCase(), "architectural-standard", "consolidated")))
-                        .firstSeenAt(sample.getCreatedAt() != null ? sample.getCreatedAt() : LocalDateTime.now())
-                        .lastSeenAt(LocalDateTime.now())
-                        .build();
-
-                Memory saved = memoryRepository.save(memory);
-                enqueueOutboxProjections(saved);
+            Decision sample = cluster.get(0);
+            Optional<Memory> synthesizedMem = semanticKnowledgeSynthesisService.synthesizeAndPromoteArchitecturalKnowledge(
+                    topic, projectKey, cluster, sample.getProject(), sample.getRepository()
+            );
+            if (synthesizedMem.isPresent()) {
                 synthesized++;
             }
         }

@@ -4,12 +4,12 @@ import com.secondbrain.common.entity.*;
 import com.secondbrain.common.enums.*;
 import com.secondbrain.common.repository.*;
 import com.secondbrain.service.MemoryConsolidationService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.HashSet;
@@ -20,7 +20,6 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
-@Transactional
 public class MemoryConsolidationServiceIntegrationTest {
 
     @Autowired
@@ -60,6 +59,8 @@ public class MemoryConsolidationServiceIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        cleanup();
+
         testProject = projectRepository.save(Project.builder()
                 .name("CoreBanking")
                 .description("Distributed Core Banking")
@@ -83,6 +84,23 @@ public class MemoryConsolidationServiceIntegrationTest {
                 .name("Codex")
                 .type("CODEX")
                 .build());
+    }
+
+    @AfterEach
+    void tearDown() {
+        cleanup();
+    }
+
+    private void cleanup() {
+        outboxRepository.deleteAll();
+        memoryRepository.deleteAll();
+        checkpointRepository.deleteAll();
+        decisionRepository.deleteAll();
+        attemptRepository.deleteAll();
+        sessionRepository.deleteAll();
+        repositoryRepository.deleteAll();
+        projectRepository.deleteAll();
+        agentRepository.deleteAll();
     }
 
     @Test
@@ -168,7 +186,7 @@ public class MemoryConsolidationServiceIntegrationTest {
 
         // 1. Architectural standard for Redis with memoryKey and evidence links
         Memory archStandard = allMemories.stream()
-                .filter(m -> m.getType() == MemoryType.ARCHITECTURAL && m.getContent().contains("Architectural Standard [Redis]"))
+                .filter(m -> m.getType() == MemoryType.ARCHITECTURAL && m.getMemoryKey().contains("REDIS"))
                 .findFirst()
                 .orElseThrow();
         assertThat(archStandard.getMemoryKey()).isEqualTo("ARCHITECTURAL_STANDARD:" + testProject.getId() + ":REDIS");
@@ -178,7 +196,7 @@ public class MemoryConsolidationServiceIntegrationTest {
 
         // 2. Anti-pattern prevention rule
         Memory antiPattern = allMemories.stream()
-                .filter(m -> m.getType() == MemoryType.PROCEDURAL && m.getContent().contains("Anti-Pattern Prevention [Redis]"))
+                .filter(m -> m.getType() == MemoryType.PROCEDURAL && m.getMemoryKey().contains("REDIS"))
                 .findFirst()
                 .orElseThrow();
         assertThat(antiPattern.getMemoryKey()).isEqualTo("ANTI_PATTERN:" + testProject.getId() + ":REDIS");
@@ -186,7 +204,7 @@ public class MemoryConsolidationServiceIntegrationTest {
 
         // 3. Multi-Agent Developer preference (Claude + Codex consensus -> ESTABLISHED)
         Memory preference = allMemories.stream()
-                .filter(m -> m.getType() == MemoryType.PREFERENCE && m.getContent().contains("Developer Preference: Standardized on Redis"))
+                .filter(m -> m.getType() == MemoryType.PREFERENCE && m.getMemoryKey().contains("REDIS"))
                 .findFirst()
                 .orElseThrow();
         assertThat(preference.getMemoryKey()).isEqualTo("DEVELOPER_PREFERENCE:REDIS");
