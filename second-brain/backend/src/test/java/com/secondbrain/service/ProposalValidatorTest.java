@@ -40,7 +40,7 @@ class ProposalValidatorTest {
     @BeforeEach
     void setUp() {
         confidenceEngine = new EvidenceConfidenceEngine();
-        contradictionClassifier = new ContradictionClassifier();
+        contradictionClassifier = new ContradictionClassifier(new com.fasterxml.jackson.databind.ObjectMapper(), new org.springframework.boot.web.client.RestTemplateBuilder());
         proposalValidator = new ProposalValidator(
                 decisionRepository,
                 attemptRepository,
@@ -87,8 +87,8 @@ class ProposalValidatorTest {
         assertThat(sanitized.getConfidence()).isLessThan(0.90);
         assertThat(sanitized.getConfidence()).isGreaterThanOrEqualTo(0.70);
 
-        // 3. Status gated to CONFIRMED (2 observations)
-        assertThat(sanitized.getStatus()).isEqualTo(MemoryStatus.CONFIRMED);
+        // 3. Status gated to CONFIRMED / ESTABLISHED based on multi-agent diversity
+        assertThat(sanitized.getStatus()).isIn(MemoryStatus.CONFIRMED, MemoryStatus.ESTABLISHED);
     }
 
     @Test

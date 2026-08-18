@@ -38,7 +38,7 @@ public interface AgentAttemptRepository extends JpaRepository<AgentAttempt, UUID
     @Query("SELECT a FROM AgentAttempt a WHERE a.status = :status AND a.repository.id = :repoId ORDER BY a.createdAt DESC")
     List<AgentAttempt> findByStatusAndRepositoryId(@Param("status") String status, @Param("repoId") UUID repoId);
 
-    @Query("SELECT a FROM AgentAttempt a LEFT JOIN FETCH a.project LEFT JOIN FETCH a.repository WHERE a.status IN :statuses AND (:after IS NULL OR a.createdAt > :after OR (a.createdAt = :after AND a.id > :lastId)) ORDER BY a.createdAt ASC, a.id ASC")
+    @Query("SELECT a FROM AgentAttempt a LEFT JOIN FETCH a.project LEFT JOIN FETCH a.repository LEFT JOIN FETCH a.session WHERE a.status IN :statuses AND (:after IS NULL OR a.createdAt > :after OR (a.createdAt = :after AND a.id > :lastId)) ORDER BY a.createdAt ASC, a.id ASC")
     List<AgentAttempt> findIncrementalFailures(@Param("statuses") List<String> statuses,
                                               @Param("after") java.time.LocalDateTime after,
                                               @Param("lastId") UUID lastId,

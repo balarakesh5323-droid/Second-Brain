@@ -13,7 +13,9 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 @Data
@@ -117,4 +119,10 @@ public class Memory extends BaseEntity {
 
     @Column(columnDefinition = "text")
     private String historicalContext;
+
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "memory_audit_logs", joinColumns = @JoinColumn(name = "memory_id"))
+    @Column(name = "audit_entry", columnDefinition = "text")
+    @Builder.Default
+    private List<String> auditLog = new ArrayList<>();
 }

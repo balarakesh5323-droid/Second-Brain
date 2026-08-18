@@ -64,7 +64,7 @@ class SemanticKnowledgeSynthesisServiceTest {
     @BeforeEach
     void setUp() {
         EvidenceConfidenceEngine confidenceEngine = new EvidenceConfidenceEngine();
-        ContradictionClassifier contradictionClassifier = new ContradictionClassifier();
+        ContradictionClassifier contradictionClassifier = new ContradictionClassifier(new com.fasterxml.jackson.databind.ObjectMapper(), new org.springframework.boot.web.client.RestTemplateBuilder());
         proposalValidator = new ProposalValidator(
                 decisionRepository,
                 attemptRepository,

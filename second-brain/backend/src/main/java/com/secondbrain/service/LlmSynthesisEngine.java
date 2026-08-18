@@ -164,8 +164,11 @@ public class LlmSynthesisEngine {
 
         List<AgentProvenance> provenances = new ArrayList<>();
         for (Decision d : decisions) {
+            String agent = (d.getAgent() != null && d.getAgent().getName() != null) ? d.getAgent().getName() : "UNKNOWN";
+            String session = (d.getSession() != null && d.getSession().getId() != null) ? d.getSession().getId().toString() : null;
             provenances.add(AgentProvenance.builder()
-                    .agentName("Agent")
+                    .agentName(agent)
+                    .sessionId(session)
                     .repositoryName(d.getRepository() != null ? d.getRepository().getName() : "repo")
                     .actionType("DECISION_APPROVED")
                     .timestamp(d.getCreatedAt() != null ? d.getCreatedAt() : java.time.LocalDateTime.now())
@@ -196,8 +199,11 @@ public class LlmSynthesisEngine {
 
     private void attachDecisionProvenances(KnowledgeProposal proposal, List<Decision> decisions) {
         for (Decision d : decisions) {
+            String agent = (d.getAgent() != null && d.getAgent().getName() != null) ? d.getAgent().getName() : "UNKNOWN";
+            String session = (d.getSession() != null && d.getSession().getId() != null) ? d.getSession().getId().toString() : null;
             proposal.getProvenances().add(AgentProvenance.builder()
-                    .agentName("Agent")
+                    .agentName(agent)
+                    .sessionId(session)
                     .repositoryName(d.getRepository() != null ? d.getRepository().getName() : "repo")
                     .actionType("ARCHITECTURAL_DECISION")
                     .timestamp(d.getCreatedAt() != null ? d.getCreatedAt() : java.time.LocalDateTime.now())

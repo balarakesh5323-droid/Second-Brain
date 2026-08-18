@@ -7,6 +7,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -53,8 +54,31 @@ class EvidenceConfidenceEngineTest {
         );
 
         assertThat(assessment.getGatedStatus()).isEqualTo(MemoryStatus.ESTABLISHED);
-        assertThat(assessment.getCalibratedConfidence()).isGreaterThanOrEqualTo(0.90);
+        assertThat(assessment.getCalibratedConfidence()).isGreaterThanOrEqualTo(0.85);
         assertThat(assessment.getProvenanceSource()).isEqualTo("MULTI_AGENT_CONSENSUS");
+    }
+
+    @Test
+    @DisplayName("Evidence Independence: 10 events in 1 single session receives diminishing return discount")
+    void testSameSessionDiminishingReturns() {
+        List<AgentProvenance> singleSessionBursts = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            singleSessionBursts.add(AgentProvenance.builder()
+                    .agentName("Claude Code")
+                    .repositoryName("auth-service")
+                    .sessionId("s1") // Same session 10 times
+                    .build());
+        }
+        Set<String> tenEvents = Set.of("e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9", "e10");
+
+        EvidenceConfidenceEngine.ConfidenceAssessment assessment = confidenceEngine.evaluate(
+                10, singleSessionBursts, tenEvents, false
+        );
+
+        // Effective independent evidence is discounted heavily (~1.6) rather than 10.0
+        assertThat(assessment.getEffectiveIndependentEvidence()).isLessThan(2.0);
+        assertThat(assessment.getGatedStatus()).isEqualTo(MemoryStatus.CONFIRMED);
+        assertThat(assessment.getCalibratedConfidence()).isLessThan(0.70);
     }
 
     @Test

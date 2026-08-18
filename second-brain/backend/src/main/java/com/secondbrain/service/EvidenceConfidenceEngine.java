@@ -7,16 +7,15 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
  * Algorithmic Confidence & Status Gating Engine.
  *
- * Invariant: LLM-generated self-reported confidence is NOT trusted.
- * Confidence and lifecycle status are strictly derived from empirical evidence
- * count, multi-agent diversity, session diversity, and cross-repo validation.
+ * Implements an Evidence Independence Model:
+ * Repeated events from the same session/agent receive diminishing weights.
+ * True high confidence requires independent cross-agent, cross-session, or cross-repo validation.
  */
 @Service
 @Slf4j
@@ -26,85 +25,101 @@ public class EvidenceConfidenceEngine {
     @Builder
     public static class ConfidenceAssessment {
         private double calibratedConfidence;
+        private double effectiveIndependentEvidence;
         private MemoryStatus gatedStatus;
         private String provenanceSource;
         private String explanation;
     }
 
     /**
-     * Calibrates true empirical confidence and enforces lifecycle status gates.
+     * Calibrates empirical confidence based on evidence independence and enforces lifecycle status gates.
      */
     public ConfidenceAssessment evaluate(
-            int evidenceCount,
+            int rawEvidenceCount,
             List<AgentProvenance> provenances,
             Set<String> evidenceSources,
             boolean isDeveloperExplicit) {
 
-        if (evidenceCount <= 0 || (evidenceSources != null && evidenceSources.isEmpty())) {
+        if (rawEvidenceCount <= 0 || (evidenceSources != null && evidenceSources.isEmpty())) {
             return ConfidenceAssessment.builder()
                     .calibratedConfidence(0.10)
+                    .effectiveIndependentEvidence(0.0)
                     .gatedStatus(MemoryStatus.PROPOSED)
                     .provenanceSource("UNVERIFIED")
                     .explanation("No verifiable evidence linked.")
                     .build();
         }
 
-        // Distinct agent and repository diversity
-        Set<String> distinctAgents = (provenances != null) ? provenances.stream()
-                .filter(p -> p.getAgentName() != null && !p.getAgentName().isBlank())
-                .map(AgentProvenance::getAgentName)
-                .collect(Collectors.toSet()) : Set.of();
+        // 1. Group provenances by Session and Agent to detect clustering
+        Map<String, Integer> eventsPerSession = new HashMap<>();
+        Set<String> distinctAgents = new HashSet<>();
+        Set<String> distinctRepos = new HashSet<>();
 
-        Set<String> distinctRepos = (provenances != null) ? provenances.stream()
-                .filter(p -> p.getRepositoryName() != null && !p.getRepositoryName().isBlank())
-                .map(AgentProvenance::getRepositoryName)
-                .collect(Collectors.toSet()) : Set.of();
+        if (provenances != null) {
+            for (AgentProvenance p : provenances) {
+                if (p.getAgentName() != null && !p.getAgentName().isBlank() && !p.getAgentName().equalsIgnoreCase("UNKNOWN")) {
+                    distinctAgents.add(p.getAgentName());
+                }
+                if (p.getRepositoryName() != null && !p.getRepositoryName().isBlank()) {
+                    distinctRepos.add(p.getRepositoryName());
+                }
+                String sessionKey = p.getSessionId() != null ? p.getSessionId() : "default-session";
+                eventsPerSession.put(sessionKey, eventsPerSession.getOrDefault(sessionKey, 0) + 1);
+            }
+        }
 
-        Set<String> distinctSessions = (provenances != null) ? provenances.stream()
-                .filter(p -> p.getSessionId() != null && !p.getSessionId().isBlank())
-                .map(AgentProvenance::getSessionId)
-                .collect(Collectors.toSet()) : Set.of();
+        // 2. Calculate Effective Independent Evidence with Diminishing Returns for same-session bursts
+        double effectiveEvidence = 0.0;
+        if (eventsPerSession.isEmpty()) {
+            effectiveEvidence = Math.min(rawEvidenceCount, 1.0 + Math.log1p(rawEvidenceCount) * 0.3);
+        } else {
+            for (Map.Entry<String, Integer> entry : eventsPerSession.entrySet()) {
+                int sessionEvents = entry.getValue();
+                // 1st event in session gives 1.0, subsequent events in same session give diminishing log weight
+                double sessionWeight = 1.0 + Math.log1p(sessionEvents - 1) * 0.25;
+                effectiveEvidence += sessionWeight;
+            }
+        }
 
-        double baseConfidence;
+        // Add Multi-Agent and Multi-Repo Independent Boosts
+        if (distinctAgents.size() >= 2) {
+            effectiveEvidence += (distinctAgents.size() - 1) * 0.80; // Significant boost for multi-agent agreement
+        }
+        if (distinctRepos.size() >= 2) {
+            effectiveEvidence += (distinctRepos.size() - 1) * 0.50; // Boost for cross-repo generality
+        }
+        if (isDeveloperExplicit) {
+            effectiveEvidence += 1.50; // User explicit preference carries high authority
+        }
+
+        // 3. Calibrate Empirical Confidence & Status Gating
+        double calibratedConfidence;
         MemoryStatus status;
 
-        if (evidenceCount == 1) {
-            baseConfidence = 0.50;
+        if (effectiveEvidence < 1.5) {
+            // Single observation or single-session burst: strictly PROPOSED
+            calibratedConfidence = Math.min(0.60, 0.40 + (effectiveEvidence * 0.12));
             status = MemoryStatus.PROPOSED;
-        } else if (evidenceCount == 2) {
-            baseConfidence = 0.70;
+        } else if (effectiveEvidence < 3.0) {
+            // 2 independent sessions or multi-event with validation: CONFIRMED
+            calibratedConfidence = Math.min(0.80, 0.62 + ((effectiveEvidence - 1.5) * 0.10));
             status = MemoryStatus.CONFIRMED;
         } else {
-            baseConfidence = 0.82;
-            status = (distinctAgents.size() >= 2 || distinctRepos.size() >= 2) ? MemoryStatus.ESTABLISHED : MemoryStatus.CONFIRMED;
-        }
-
-        // Apply diversity multipliers
-        double agentBonus = Math.max(0, (distinctAgents.size() - 1) * 0.08);
-        double repoBonus = Math.max(0, (distinctRepos.size() - 1) * 0.05);
-        double sessionBonus = Math.max(0, (distinctSessions.size() - 1) * 0.03);
-        double developerBonus = isDeveloperExplicit ? 0.10 : 0.0;
-
-        double finalConfidence = Math.min(0.98, baseConfidence + agentBonus + repoBonus + sessionBonus + developerBonus);
-
-        // Strict Status Gating Guardrails:
-        // 1. Single observation can NEVER be ESTABLISHED
-        if (evidenceCount < 3 && status == MemoryStatus.ESTABLISHED) {
-            status = MemoryStatus.CONFIRMED;
-        }
-        if (evidenceCount == 1) {
-            status = MemoryStatus.PROPOSED;
-            finalConfidence = Math.min(0.60, finalConfidence);
+            // 3+ independent evidence units (multi-agent or cross-repo): ESTABLISHED
+            calibratedConfidence = Math.min(0.96, 0.82 + ((effectiveEvidence - 3.0) * 0.04));
+            status = (distinctAgents.size() >= 2 || distinctRepos.size() >= 2 || isDeveloperExplicit)
+                    ? MemoryStatus.ESTABLISHED : MemoryStatus.CONFIRMED;
         }
 
         String provenanceSource = isDeveloperExplicit ? "DEVELOPER_EXPLICIT"
                 : (distinctAgents.size() >= 2 ? "MULTI_AGENT_CONSENSUS" : "AGENT_EXPERIENCE");
 
-        String explanation = String.format("Evidence count: %d, Distinct agents: %d (%s), Distinct repos: %d, Gated status: %s",
-                evidenceCount, distinctAgents.size(), String.join(", ", distinctAgents), distinctRepos.size(), status);
+        String explanation = String.format("Raw count: %d, Effective independent evidence: %.2f, Distinct agents: %d, Distinct repos: %d, Gated status: %s",
+                rawEvidenceCount, effectiveEvidence, distinctAgents.size(), distinctRepos.size(), status);
 
         return ConfidenceAssessment.builder()
-                .calibratedConfidence(finalConfidence)
+                .calibratedConfidence(calibratedConfidence)
+                .effectiveIndependentEvidence(effectiveEvidence)
                 .gatedStatus(status)
                 .provenanceSource(provenanceSource)
                 .explanation(explanation)

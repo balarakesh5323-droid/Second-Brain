@@ -97,12 +97,18 @@ public class SemanticKnowledgeSynthesisService {
                 memory.setConfidence(proposal.getConfidence());
                 memory.setStatus(proposal.getStatus());
                 memory.setLastSeenAt(LocalDateTime.now());
+                memory.getAuditLog().add(String.format("[%s] CONFIRMED with %d new evidence sources. Updated status: %s, confidence: %.2f.",
+                        LocalDateTime.now(), newEvidenceCount, proposal.getStatus(), proposal.getConfidence()));
                 savedMemory = memoryRepository.save(memory);
                 enqueueOutboxProjections(savedMemory);
             } else {
                 savedMemory = memory;
             }
         } else {
+            List<String> initialAudit = new ArrayList<>();
+            initialAudit.add(String.format("[%s] CREATED with %d evidence sources. Provenance: %s. Status: %s. Confidence: %.2f.",
+                    LocalDateTime.now(), proposal.getEvidenceSources().size(), validationResult.getAssessment().getProvenanceSource(), proposal.getStatus(), proposal.getConfidence()));
+
             Memory memory = Memory.builder()
                     .memoryKey(proposal.getMemoryKey())
                     .content(proposal.getKnowledge())
@@ -118,6 +124,7 @@ public class SemanticKnowledgeSynthesisService {
                     .evidenceSources(proposal.getEvidenceSources())
                     .provenanceSource(validationResult.getAssessment().getProvenanceSource())
                     .tags(proposal.getSuggestedTags() != null ? proposal.getSuggestedTags() : new HashSet<>(Set.of(topic.toLowerCase())))
+                    .auditLog(initialAudit)
                     .firstSeenAt(LocalDateTime.now())
                     .lastSeenAt(LocalDateTime.now())
                     .build();
@@ -135,6 +142,8 @@ public class SemanticKnowledgeSynthesisService {
                         oldMem.setSupersededBy(savedMemory.getId());
                         oldMem.setSupersededAt(LocalDateTime.now());
                         oldMem.setConfidence(Math.max(0.1, (oldMem.getConfidence() != null ? oldMem.getConfidence() : 0.5) * 0.5));
+                        oldMem.getAuditLog().add(String.format("[%s] SUPERSEDED by memory [%s]. Reason: Contradicted by newer verified pattern.",
+                                LocalDateTime.now(), savedMemory.getMemoryKey()));
                         memoryRepository.save(oldMem);
                         enqueueOutboxProjections(oldMem);
                         log.info("🔄 Memory [{}] superseded by [{}]", oldMem.getMemoryKey(), savedMemory.getMemoryKey());

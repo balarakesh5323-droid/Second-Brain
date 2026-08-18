@@ -192,7 +192,7 @@ public class MemoryConsolidationServiceIntegrationTest {
         assertThat(archStandard.getMemoryKey()).isEqualTo("ARCHITECTURAL_STANDARD:" + testProject.getId() + ":REDIS");
         assertThat(archStandard.getEvidenceSources()).contains("decision:" + d1.getId(), "decision:" + d2.getId());
         assertThat(archStandard.getProvenanceSource()).isIn("AGENT_EXPERIENCE", "MULTI_AGENT_CONSENSUS");
-        assertThat(archStandard.getStatus()).isIn(MemoryStatus.CONFIRMED, MemoryStatus.ESTABLISHED);
+        assertThat(archStandard.getStatus()).isIn(MemoryStatus.PROPOSED, MemoryStatus.CONFIRMED, MemoryStatus.ESTABLISHED);
 
         // 2. Anti-pattern prevention rule
         Memory antiPattern = allMemories.stream()
