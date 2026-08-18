@@ -15,8 +15,14 @@ public interface AgentAttemptRepository extends JpaRepository<AgentAttempt, UUID
     @Query("SELECT a FROM AgentAttempt a WHERE a.repository.id = :repoId ORDER BY a.createdAt DESC")
     List<AgentAttempt> findByRepositoryIdOrderByCreatedAtDesc(@Param("repoId") UUID repoId);
 
+    @Query("SELECT a FROM AgentAttempt a WHERE a.repository.id = :repoId ORDER BY a.createdAt DESC")
+    List<AgentAttempt> findByRepositoryIdOrderByCreatedAtDesc(@Param("repoId") UUID repoId, org.springframework.data.domain.Pageable pageable);
+
     @Query("SELECT a FROM AgentAttempt a WHERE a.project.id = :projectId ORDER BY a.createdAt DESC")
     List<AgentAttempt> findByProjectIdOrderByCreatedAtDesc(@Param("projectId") UUID projectId);
+
+    @Query("SELECT a FROM AgentAttempt a WHERE a.project.id = :projectId ORDER BY a.createdAt DESC")
+    List<AgentAttempt> findByProjectIdOrderByCreatedAtDesc(@Param("projectId") UUID projectId, org.springframework.data.domain.Pageable pageable);
 
     @Query("SELECT a FROM AgentAttempt a WHERE a.session.id = :sessionId ORDER BY a.createdAt DESC")
     List<AgentAttempt> findBySessionIdOrderByCreatedAtDesc(@Param("sessionId") UUID sessionId);

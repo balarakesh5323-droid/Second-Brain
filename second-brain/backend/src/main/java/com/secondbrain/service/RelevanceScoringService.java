@@ -1,5 +1,6 @@
 package com.secondbrain.service;
 
+import com.secondbrain.common.dto.SearchResult;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -164,6 +165,82 @@ public class RelevanceScoringService {
                 .matchedKeywords(matchedKeywords)
                 .createdAt(createdAt)
                 .build();
+    }
+
+    /**
+     * Scores code symbols by combining semantic vector similarity with lexical matching and scope.
+     */
+    public ScoredCandidate<SearchResult> scoreSymbolCandidate(
+            SearchResult result,
+            UUID targetRepoId,
+            UUID targetProjectId,
+            String candidateRepoName,
+            Set<String> taskTokens) {
+
+        String symbolText = (result.getContent() != null ? result.getContent() : "");
+        if (result.getPayload() != null) {
+            symbolText += " " + result.getPayload().getOrDefault("name", "") + " "
+                    + result.getPayload().getOrDefault("signature", "") + " "
+                    + result.getPayload().getOrDefault("file", "");
+        }
+
+        String repoIdStr = result.getPayload() != null ? (String) result.getPayload().get("repositoryId") : null;
+        String projIdStr = result.getPayload() != null ? (String) result.getPayload().get("projectId") : null;
+        UUID candidateRepoId = repoIdStr != null ? parseUUID(repoIdStr) : null;
+        UUID candidateProjectId = projIdStr != null ? parseUUID(projIdStr) : null;
+
+        String scope;
+        double scopeFactor;
+        if (targetRepoId != null && targetRepoId.equals(candidateRepoId)) {
+            scope = "REPOSITORY";
+            scopeFactor = 1.0;
+        } else if (targetProjectId != null && targetProjectId.equals(candidateProjectId)) {
+            scope = "PROJECT_SIBLING";
+            scopeFactor = 0.82;
+        } else {
+            scope = "GLOBAL";
+            scopeFactor = 0.60;
+        }
+
+        Set<String> candidateTokens = extractTokens(symbolText);
+        List<String> matchedKeywords = new ArrayList<>();
+        for (String tok : taskTokens) {
+            if (candidateTokens.contains(tok)) {
+                matchedKeywords.add(tok);
+            }
+        }
+
+        double vectorScore = Math.max(0.0, Math.min(1.0, result.getScore()));
+        double lexicalOverlap = (double) matchedKeywords.size() / Math.max(1, taskTokens.size());
+
+        double rawScore = (0.55 * vectorScore) + (0.35 * lexicalOverlap) + Math.min(0.10, matchedKeywords.size() * 0.03);
+        double relevance = Math.min(0.99, rawScore * scopeFactor);
+        relevance = Math.round(relevance * 100.0) / 100.0;
+
+        String reason;
+        if (!matchedKeywords.isEmpty()) {
+            reason = "Semantic vector match + keyword match on [" + String.join(", ", matchedKeywords) + "] in " + scope.toLowerCase();
+        } else {
+            reason = "Semantic vector match for task query in repository symbols";
+        }
+
+        return ScoredCandidate.<SearchResult>builder()
+                .item(result)
+                .relevance(relevance)
+                .scope(scope)
+                .repositoryName(candidateRepoName)
+                .reason(reason)
+                .matchedKeywords(matchedKeywords)
+                .createdAt(null)
+                .build();
+    }
+
+    private UUID parseUUID(String s) {
+        try {
+            return UUID.fromString(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

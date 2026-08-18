@@ -116,4 +116,33 @@ class RelevanceScoringServiceTest {
         assertThat(filtered).hasSize(1);
         assertThat(filtered.get(0).getItem()).isEqualTo("high");
     }
+
+    @Test
+    @DisplayName("Symbol Scoring: Combines vector similarity with lexical matching and scope normalization")
+    void testScoreSymbolCandidate() {
+        Set<String> taskTokens = scoringService.extractTokens("Validate Redis Token");
+        UUID targetRepo = UUID.randomUUID();
+        UUID targetProj = UUID.randomUUID();
+
+        com.secondbrain.common.dto.SearchResult sr = com.secondbrain.common.dto.SearchResult.builder()
+                .id("sym-1")
+                .score(0.92f)
+                .content("public boolean validateToken(String token)")
+                .payload(java.util.Map.of(
+                        "name", "validateToken",
+                        "signature", "public boolean validateToken(String token)",
+                        "file", "JwtTokenValidator.java",
+                        "repositoryId", targetRepo.toString(),
+                        "projectId", targetProj.toString()
+                ))
+                .build();
+
+        var scored = scoringService.scoreSymbolCandidate(
+                sr, targetRepo, targetProj, "auth-service", taskTokens
+        );
+
+        assertThat(scored.getScope()).isEqualTo("REPOSITORY");
+        assertThat(scored.getRelevance()).isGreaterThan(0.70);
+        assertThat(scored.getReason()).contains("token");
+    }
 }

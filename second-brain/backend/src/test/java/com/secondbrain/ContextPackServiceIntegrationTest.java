@@ -157,9 +157,9 @@ public class ContextPackServiceIntegrationTest {
         assertThat(handoff).isNotNull();
         assertThat(handoff.get("nextSteps")).isEqualTo("Run multi-instance cluster test");
 
-        // Verify Decisions (Primary Repo + Sibling Repo)
+        // Verify Decisions (Primary Repo + Sibling Repo, Deduplicated)
         List<Map<String, Object>> decisions = (List<Map<String, Object>>) pack.get("relevantDecisions");
-        assertThat(decisions).isNotEmpty();
+        assertThat(decisions).hasSize(2);
         assertThat(decisions.stream().anyMatch(d -> d.get("title").equals("Redis Sliding Window Blacklist") && d.get("scope").equals("REPOSITORY"))).isTrue();
         assertThat(decisions.stream().anyMatch(d -> d.get("title").equals("Gateway Redis Token Validation") && d.get("scope").equals("PROJECT_SIBLING"))).isTrue();
 
