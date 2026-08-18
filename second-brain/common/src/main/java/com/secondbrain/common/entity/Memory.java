@@ -99,6 +99,15 @@ public class Memory extends BaseEntity {
     @Builder.Default
     private Integer evidenceCount = 1;
 
+    @Column(name = "memory_key", length = 255)
+    private String memoryKey;
+
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "memory_evidence_sources", joinColumns = @JoinColumn(name = "memory_id"))
+    @Column(name = "evidence_source")
+    @Builder.Default
+    private Set<String> evidenceSources = new HashSet<>();
+
     @Column(columnDefinition = "uuid")
     private java.util.UUID supersededBy;
 

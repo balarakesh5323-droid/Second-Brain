@@ -23,4 +23,8 @@ public interface DecisionRepository extends JpaRepository<Decision, UUID> {
     List<Decision> findByStatus(String status);
 
     List<Decision> findTop10ByOrderByCreatedAtDesc();
+
+    List<Decision> findByCreatedAtAfterOrderByCreatedAtAsc(java.time.LocalDateTime after, org.springframework.data.domain.Pageable pageable);
+
+    List<Decision> findAllByOrderByCreatedAtAsc(org.springframework.data.domain.Pageable pageable);
 }

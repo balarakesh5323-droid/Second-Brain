@@ -1,17 +1,19 @@
 package com.secondbrain.service;
 
+import com.secondbrain.common.dto.SearchResult;
 import com.secondbrain.common.entity.*;
 import com.secondbrain.common.enums.*;
 import com.secondbrain.common.repository.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
@@ -19,204 +21,332 @@ import java.util.stream.Collectors;
 @Slf4j
 public class MemoryConsolidationService {
 
+    public static final int BATCH_SIZE = 50;
+
     private final MemoryRepository memoryRepository;
     private final AgentEventRepository agentEventRepository;
     private final DecisionRepository decisionRepository;
     private final AgentAttemptRepository attemptRepository;
     private final AgentSessionRepository sessionRepository;
+    private final ConsolidationCheckpointRepository checkpointRepository;
+    private final SemanticSearchService semanticSearchService;
     private final OutboxProjectionService outboxService;
+    private final ConsolidationLockService lockService;
 
     /**
      * Autonomous consolidation cycle: runs daily at 2:00 AM, or on-demand via API / MCP.
+     * Protected by PostgreSQL distributed advisory lock to prevent multi-node overlap.
      */
     @Scheduled(cron = "0 0 2 * * ?")
-    @Transactional
     public Map<String, Object> runConsolidationCycle() {
-        log.info("🧠 Starting autonomous Second Brain memory consolidation cycle...");
-        long startTime = System.currentTimeMillis();
+        if (!lockService.tryAcquireLock()) {
+            log.warn("⚠️ Consolidation lock already held by another pod/worker. Skipping cycle.");
+            return Map.of("status", "skipped", "reason", "lock_held");
+        }
 
-        int synthesizedDecisions = consolidateArchitecturalDecisions();
-        int antiPatternsLearned = consolidateFailureAntiPatterns();
-        int preferencesLearned = consolidateDeveloperPreferences();
-        int resolvedContradictions = resolveContradictionsAndSupersede();
-        int compoundedCount = compoundConfidence();
-        int decayedCount = decayStaleMemories();
-        int consolidatedHotspots = consolidateHotspots();
+        try {
+            log.info("🧠 Starting autonomous Second Brain memory consolidation cycle...");
+            long startTime = System.currentTimeMillis();
 
-        long elapsed = System.currentTimeMillis() - startTime;
-        log.info("🧠 Consolidation cycle finished in {}ms: {} decisions synthesized, {} anti-patterns learned, {} preferences, {} contradictions resolved, {} compounded, {} decayed",
-                elapsed, synthesizedDecisions, antiPatternsLearned, preferencesLearned, resolvedContradictions, compoundedCount, decayedCount);
+            int synthesizedDecisions = consolidateArchitecturalDecisions();
+            int antiPatternsLearned = consolidateFailureAntiPatterns();
+            int preferencesLearned = consolidateDeveloperPreferences();
+            int resolvedContradictions = resolveContradictionsAndSupersede();
+            int compoundedCount = compoundConfidence();
+            int decayedCount = decayStaleMemories();
+            int consolidatedHotspots = consolidateHotspots();
 
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.put("status", "success");
-        report.put("elapsedMs", elapsed);
-        report.put("decisionsSynthesized", synthesizedDecisions);
-        report.put("antiPatternsLearned", antiPatternsLearned);
-        report.put("preferencesLearned", preferencesLearned);
-        report.put("contradictionsResolved", resolvedContradictions);
-        report.put("memoriesCompounded", compoundedCount);
-        report.put("memoriesDecayed", decayedCount);
-        report.put("hotspotsConsolidated", consolidatedHotspots);
-        report.put("timestamp", LocalDateTime.now().toString());
-        return report;
+            long elapsed = System.currentTimeMillis() - startTime;
+            log.info("🧠 Consolidation cycle finished in {}ms: {} decisions synthesized, {} anti-patterns learned, {} preferences, {} contradictions resolved, {} compounded, {} decayed",
+                    elapsed, synthesizedDecisions, antiPatternsLearned, preferencesLearned, resolvedContradictions, compoundedCount, decayedCount);
+
+            Map<String, Object> report = new LinkedHashMap<>();
+            report.put("status", "success");
+            report.put("elapsedMs", elapsed);
+            report.put("decisionsSynthesized", synthesizedDecisions);
+            report.put("antiPatternsLearned", antiPatternsLearned);
+            report.put("preferencesLearned", preferencesLearned);
+            report.put("contradictionsResolved", resolvedContradictions);
+            report.put("memoriesCompounded", compoundedCount);
+            report.put("memoriesDecayed", decayedCount);
+            report.put("hotspotsConsolidated", consolidatedHotspots);
+            report.put("timestamp", LocalDateTime.now().toString());
+            return report;
+        } finally {
+            lockService.releaseLock();
+        }
     }
 
     /**
-     * 1. Architectural Decision Learning:
-     * Discovers recurring decision patterns across repositories/sessions and synthesizes durable architectural knowledge.
+     * 1. Architectural Decision Learning (Incremental & Database-Backed):
+     * Incremental batch processing with deterministic memory keys and evidence linking.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateArchitecturalDecisions() {
-        List<Decision> decisions = decisionRepository.findAll();
-        if (decisions.isEmpty()) return 0;
+        ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("DECISION_CURSOR");
+        LocalDateTime cursor = checkpoint.getLastProcessedAt();
+
+        List<Decision> batch = (cursor != null)
+                ? decisionRepository.findByCreatedAtAfterOrderByCreatedAtAsc(cursor, PageRequest.of(0, BATCH_SIZE))
+                : decisionRepository.findAllByOrderByCreatedAtAsc(PageRequest.of(0, BATCH_SIZE));
+
+        if (batch.isEmpty()) return 0;
 
         int synthesized = 0;
-        Map<String, List<Decision>> topicClusters = new HashMap<>();
+        LocalDateTime latestProcessedTime = cursor;
 
-        for (Decision d : decisions) {
+        // Group batch by project & topic
+        Map<String, List<Decision>> topicClusters = new LinkedHashMap<>();
+        for (Decision d : batch) {
             String title = d.getTitle() != null ? d.getTitle() : "";
             String topic = extractMainTopic(title);
             if (topic != null) {
-                topicClusters.computeIfAbsent(topic, k -> new ArrayList<>()).add(d);
+                String projectKey = d.getProject() != null ? d.getProject().getId().toString() : "GLOBAL";
+                String clusterKey = projectKey + ":" + topic;
+                topicClusters.computeIfAbsent(clusterKey, k -> new ArrayList<>()).add(d);
+            }
+            if (latestProcessedTime == null || (d.getCreatedAt() != null && d.getCreatedAt().isAfter(latestProcessedTime))) {
+                latestProcessedTime = d.getCreatedAt();
             }
         }
 
         for (Map.Entry<String, List<Decision>> entry : topicClusters.entrySet()) {
-            String topic = entry.getKey();
+            String clusterKey = entry.getKey();
             List<Decision> cluster = entry.getValue();
+            String[] parts = clusterKey.split(":", 2);
+            String projectKey = parts[0];
+            String topic = parts[1];
 
-            // When a pattern is repeated across 2 or more decisions, synthesize long-term architectural rule
-            if (cluster.size() >= 2) {
-                String memoryContent = String.format(
-                        "Architectural Standard [%s]: Established across %d decisions. Pattern: %s",
-                        topic, cluster.size(), cluster.get(0).getTitle()
+            String memoryKey = "ARCHITECTURAL_STANDARD:" + projectKey + ":" + topic.toUpperCase();
+            Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
+
+            if (existingOpt.isPresent()) {
+                // Update existing consolidated memory with new evidence
+                Memory memory = existingOpt.get();
+                memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + cluster.size());
+                memory.setLastSeenAt(LocalDateTime.now());
+                for (Decision d : cluster) {
+                    if (d.getId() != null) {
+                        memory.getEvidenceSources().add("decision:" + d.getId());
+                    }
+                }
+                memory.setEvidenceCount(memory.getEvidenceSources().size());
+                memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.92));
+                memoryRepository.save(memory);
+                enqueueOutboxProjections(memory);
+                synthesized++;
+            } else if (cluster.size() >= 2 || hasSemanticClusterMatches(topic, projectKey)) {
+                // Synthesize new architectural standard
+                Decision sample = cluster.get(0);
+                String content = String.format(
+                        "Architectural Standard [%s]: Established pattern '%s'.",
+                        topic, sample.getTitle()
                 );
 
-                boolean alreadyExists = memoryRepository.findAll().stream()
-                        .anyMatch(m -> m.getContent() != null && m.getContent().contains("Architectural Standard [" + topic + "]"));
-
-                if (!alreadyExists) {
-                    Decision sample = cluster.get(0);
-                    Memory memory = Memory.builder()
-                            .content(memoryContent)
-                            .type(MemoryType.ARCHITECTURAL)
-                            .scope(sample.getProject() != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
-                            .project(sample.getProject())
-                            .repository(sample.getRepository())
-                            .status(MemoryStatus.CONFIRMED)
-                            .confidence(0.92)
-                            .importance(0.88)
-                            .observationCount(cluster.size())
-                            .tags(new HashSet<>(Set.of(topic.toLowerCase(), "architectural-standard", "consolidated")))
-                            .firstSeenAt(LocalDateTime.now().minusDays(7))
-                            .lastSeenAt(LocalDateTime.now())
-                            .build();
-
-                    Memory saved = memoryRepository.save(memory);
-                    enqueueOutboxProjections(saved);
-                    synthesized++;
+                Set<String> evidence = new HashSet<>();
+                for (Decision d : cluster) {
+                    if (d.getId() != null) evidence.add("decision:" + d.getId());
                 }
-            }
-        }
-        return synthesized;
-    }
 
-    /**
-     * 2. Failure & Anti-Pattern Learning:
-     * Derives concrete prevention rules from repeated failed attempts and lessons learned.
-     */
-    @Transactional
-    public int consolidateFailureAntiPatterns() {
-        List<AgentAttempt> failures = new ArrayList<>(attemptRepository.findByStatus("FAILED"));
-        failures.addAll(attemptRepository.findByStatus("FAILURE"));
-        if (failures.isEmpty()) return 0;
-
-        int learned = 0;
-        Map<String, List<AgentAttempt>> failureClusters = new HashMap<>();
-
-        for (AgentAttempt fa : failures) {
-            String lesson = fa.getLessonLearned();
-            if (lesson != null && !lesson.isBlank()) {
-                String key = extractMainTopic(lesson);
-                if (key != null) {
-                    failureClusters.computeIfAbsent(key, k -> new ArrayList<>()).add(fa);
-                }
-            }
-        }
-
-        for (Map.Entry<String, List<AgentAttempt>> entry : failureClusters.entrySet()) {
-            String topic = entry.getKey();
-            List<AgentAttempt> cluster = entry.getValue();
-
-            AgentAttempt sample = cluster.get(0);
-            String content = String.format(
-                    "Anti-Pattern Prevention [%s]: Observed in approach '%s'. Lesson Learned: %s",
-                    topic, sample.getApproach() != null ? sample.getApproach() : "Trial", sample.getLessonLearned()
-            );
-
-            boolean alreadyExists = memoryRepository.findAll().stream()
-                    .anyMatch(m -> m.getContent() != null && m.getContent().contains("Anti-Pattern Prevention [" + topic + "]"));
-
-            if (!alreadyExists) {
                 Memory memory = Memory.builder()
+                        .memoryKey(memoryKey)
                         .content(content)
-                        .type(MemoryType.PROCEDURAL)
+                        .type(MemoryType.ARCHITECTURAL)
                         .scope(sample.getProject() != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
                         .project(sample.getProject())
                         .repository(sample.getRepository())
                         .status(MemoryStatus.CONFIRMED)
-                        .confidence(0.95)
-                        .importance(0.92)
+                        .confidence(calculateDiversityConfidence(evidence.size(), 0.90))
+                        .importance(0.88)
                         .observationCount(cluster.size())
-                        .tags(new HashSet<>(Set.of(topic.toLowerCase(), "anti-pattern", "failure-prevention", "learned-rule")))
-                        .firstSeenAt(LocalDateTime.now().minusDays(3))
+                        .evidenceCount(evidence.size())
+                        .evidenceSources(evidence)
+                        .provenanceSource("MULTI_AGENT_CONSENSUS")
+                        .tags(new HashSet<>(Set.of(topic.toLowerCase(), "architectural-standard", "consolidated")))
+                        .firstSeenAt(sample.getCreatedAt() != null ? sample.getCreatedAt() : LocalDateTime.now())
                         .lastSeenAt(LocalDateTime.now())
                         .build();
 
                 Memory saved = memoryRepository.save(memory);
                 enqueueOutboxProjections(saved);
-                learned++;
+                synthesized++;
             }
         }
+
+        // Update checkpoint cursor
+        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
+        checkpoint.setLastRunStatus("SUCCESS");
+        checkpointRepository.save(checkpoint);
+
+        return synthesized;
+    }
+
+    /**
+     * 2. Failure Anti-Pattern Learning (Incremental & Database-Backed):
+     * Derives concrete prevention rules from failed trials with evidence links.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int consolidateFailureAntiPatterns() {
+        ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("ATTEMPT_CURSOR");
+        LocalDateTime cursor = checkpoint.getLastProcessedAt();
+
+        List<AgentAttempt> batch = (cursor != null)
+                ? attemptRepository.findByStatusInAndCreatedAtAfterOrderByCreatedAtAsc(List.of("FAILED", "FAILURE"), cursor, PageRequest.of(0, BATCH_SIZE))
+                : attemptRepository.findByStatusInOrderByCreatedAtAsc(List.of("FAILED", "FAILURE"), PageRequest.of(0, BATCH_SIZE));
+
+        if (batch.isEmpty()) return 0;
+
+        int learned = 0;
+        LocalDateTime latestProcessedTime = cursor;
+
+        for (AgentAttempt fa : batch) {
+            String lesson = fa.getLessonLearned();
+            String topic = extractMainTopic(lesson != null ? lesson : fa.getApproach());
+
+            if (topic != null) {
+                String projectKey = fa.getProject() != null ? fa.getProject().getId().toString() : "GLOBAL";
+                String memoryKey = "ANTI_PATTERN:" + projectKey + ":" + topic.toUpperCase();
+
+                Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
+                if (existingOpt.isPresent()) {
+                    Memory memory = existingOpt.get();
+                    memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + 1);
+                    memory.setLastSeenAt(LocalDateTime.now());
+                    if (fa.getId() != null) memory.getEvidenceSources().add("attempt:" + fa.getId());
+                    memory.setEvidenceCount(memory.getEvidenceSources().size());
+                    memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.95));
+                    memoryRepository.save(memory);
+                    enqueueOutboxProjections(memory);
+                    learned++;
+                } else {
+                    String content = String.format(
+                            "Anti-Pattern Prevention [%s]: Observed in approach '%s'. Lesson Learned: %s",
+                            topic, fa.getApproach() != null ? fa.getApproach() : "Trial", fa.getLessonLearned()
+                    );
+
+                    Set<String> evidence = new HashSet<>();
+                    if (fa.getId() != null) evidence.add("attempt:" + fa.getId());
+
+                    Memory memory = Memory.builder()
+                            .memoryKey(memoryKey)
+                            .content(content)
+                            .type(MemoryType.PROCEDURAL)
+                            .scope(fa.getProject() != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
+                            .project(fa.getProject())
+                            .repository(fa.getRepository())
+                            .status(MemoryStatus.CONFIRMED)
+                            .confidence(0.92)
+                            .importance(0.90)
+                            .observationCount(1)
+                            .evidenceCount(1)
+                            .evidenceSources(evidence)
+                            .provenanceSource("AGENT_EXPERIENCE")
+                            .tags(new HashSet<>(Set.of(topic.toLowerCase(), "anti-pattern", "failure-prevention", "learned-rule")))
+                            .firstSeenAt(fa.getCreatedAt() != null ? fa.getCreatedAt() : LocalDateTime.now())
+                            .lastSeenAt(LocalDateTime.now())
+                            .build();
+
+                    Memory saved = memoryRepository.save(memory);
+                    enqueueOutboxProjections(saved);
+                    learned++;
+                }
+            }
+
+            if (latestProcessedTime == null || (fa.getCreatedAt() != null && fa.getCreatedAt().isAfter(latestProcessedTime))) {
+                latestProcessedTime = fa.getCreatedAt();
+            }
+        }
+
+        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
+        checkpoint.setLastRunStatus("SUCCESS");
+        checkpointRepository.save(checkpoint);
+
         return learned;
     }
 
     /**
-     * 3. Developer Preferences & Conventions:
-     * Derives conventions from successful sessions, testing idioms, and framework choices.
+     * 3. Developer Preferences & Conventions (Incremental with Evidence Diversity):
+     * Evaluates distinct agents, sessions, and repos to avoid 1 agent artificially skewing confidence.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateDeveloperPreferences() {
-        List<AgentSession> sessions = sessionRepository.findAll();
-        if (sessions.isEmpty()) return 0;
+        ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("SESSION_CURSOR");
+        LocalDateTime cursor = checkpoint.getLastProcessedAt();
+
+        List<AgentSession> batch = (cursor != null)
+                ? sessionRepository.findByStatusAndCreatedAtAfterOrderByCreatedAtAsc("COMPLETED", cursor, PageRequest.of(0, BATCH_SIZE))
+                : sessionRepository.findByStatusOrderByCreatedAtAsc("COMPLETED", PageRequest.of(0, BATCH_SIZE));
+
+        if (batch.isEmpty()) return 0;
 
         int learned = 0;
-        Set<String> observedTechnologies = new HashSet<>();
+        LocalDateTime latestProcessedTime = cursor;
 
-        for (AgentSession s : sessions) {
+        // Group evidence by technology
+        Map<String, Set<String>> techAgents = new HashMap<>();
+        Map<String, Set<UUID>> techRepos = new HashMap<>();
+        Map<String, Set<UUID>> techSessions = new HashMap<>();
+
+        for (AgentSession s : batch) {
             if (s.getTask() != null) {
                 String task = s.getTask().toLowerCase();
-                if (task.contains("redis")) observedTechnologies.add("Redis");
-                if (task.contains("jwt") || task.contains("oauth")) observedTechnologies.add("JWT/OAuth2");
-                if (task.contains("neo4j") || task.contains("graph")) observedTechnologies.add("Neo4j Graph");
-                if (task.contains("qdrant") || task.contains("vector")) observedTechnologies.add("Qdrant Vector Store");
+                String agentName = s.getAgent() != null ? s.getAgent().getName() : "agent";
+                UUID repoId = s.getRepository() != null ? s.getRepository().getId() : null;
+
+                trackTechEvidence("Redis", task.contains("redis"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
+                trackTechEvidence("JWT/OAuth2", task.contains("jwt") || task.contains("oauth"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
+                trackTechEvidence("Neo4j Graph", task.contains("neo4j") || task.contains("graph"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
+                trackTechEvidence("Qdrant Vector", task.contains("qdrant") || task.contains("vector"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
+            }
+
+            if (latestProcessedTime == null || (s.getCreatedAt() != null && s.getCreatedAt().isAfter(latestProcessedTime))) {
+                latestProcessedTime = s.getCreatedAt();
             }
         }
 
-        for (String tech : observedTechnologies) {
-            String content = String.format("Developer Preference: Standardized on %s for platform architecture across agent sessions.", tech);
-            boolean exists = memoryRepository.findAll().stream()
-                    .anyMatch(m -> m.getContent() != null && m.getContent().contains("Developer Preference: Standardized on " + tech));
+        for (String tech : techSessions.keySet()) {
+            int agentCount = techAgents.getOrDefault(tech, Set.of()).size();
+            int sessionCount = techSessions.getOrDefault(tech, Set.of()).size();
+            int repoCount = techRepos.getOrDefault(tech, Set.of()).size();
 
-            if (!exists) {
+            // Calculate confidence from evidence diversity
+            double diversityConfidence = Math.min(0.95, 0.50 + (agentCount * 0.15) + (repoCount * 0.10) + (sessionCount * 0.05));
+            String provenance = (agentCount >= 2) ? "MULTI_AGENT_CONSENSUS" : "INFERRED_AGENT_EXPERIENCE";
+
+            String memoryKey = "DEVELOPER_PREFERENCE:" + tech.toUpperCase().replaceAll("[^A-Z0-9]", "_");
+            String content = String.format("Developer Preference: Standardized on %s for platform architecture across agent sessions.", tech);
+
+            Set<String> evidenceSources = techSessions.getOrDefault(tech, Set.of()).stream()
+                    .map(id -> "session:" + id)
+                    .collect(Collectors.toSet());
+
+            Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
+            if (existingOpt.isPresent()) {
+                Memory memory = existingOpt.get();
+                memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + sessionCount);
+                memory.getEvidenceSources().addAll(evidenceSources);
+                memory.setEvidenceCount(memory.getEvidenceSources().size());
+                memory.setConfidence(diversityConfidence);
+                memory.setProvenanceSource(provenance);
+                memory.setLastSeenAt(LocalDateTime.now());
+                memoryRepository.save(memory);
+                enqueueOutboxProjections(memory);
+                learned++;
+            } else {
                 Memory memory = Memory.builder()
+                        .memoryKey(memoryKey)
                         .content(content)
                         .type(MemoryType.PREFERENCE)
                         .scope(MemoryScope.GLOBAL)
                         .status(MemoryStatus.CONFIRMED)
-                        .confidence(0.90)
+                        .confidence(diversityConfidence)
                         .importance(0.80)
-                        .observationCount(sessions.size())
+                        .observationCount(sessionCount)
+                        .evidenceCount(evidenceSources.size())
+                        .evidenceSources(evidenceSources)
+                        .provenanceSource(provenance)
                         .tags(new HashSet<>(Set.of(tech.toLowerCase().replaceAll("[^a-z0-9]", "-"), "developer-preference", "convention")))
                         .firstSeenAt(LocalDateTime.now())
                         .lastSeenAt(LocalDateTime.now())
@@ -227,16 +357,23 @@ public class MemoryConsolidationService {
                 learned++;
             }
         }
+
+        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
+        checkpoint.setLastRunStatus("SUCCESS");
+        checkpointRepository.save(checkpoint);
+
         return learned;
     }
 
     /**
-     * 4. Contradiction Resolution & Superseding:
-     * Detects when newer memories/decisions supersede older ones and updates statuses.
+     * 4. Contradiction Resolution & Knowledge Superseding:
+     * Scans active memories in small batches to detect conflicting statements and update lifecycle.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int resolveContradictionsAndSupersede() {
-        List<Memory> activeMemories = memoryRepository.findAll();
+        List<Memory> activeMemories = memoryRepository.findByStatus(MemoryStatus.CONFIRMED);
+        activeMemories.addAll(memoryRepository.findByStatus(MemoryStatus.OBSERVED));
         int resolved = 0;
 
         for (int i = 0; i < activeMemories.size(); i++) {
@@ -250,12 +387,16 @@ public class MemoryConsolidationService {
                 if (isContradiction(m1.getContent(), m2.getContent())) {
                     if (m1.getLastSeenAt() != null && m2.getLastSeenAt() != null && m2.getLastSeenAt().isAfter(m1.getLastSeenAt())) {
                         m1.setStatus(MemoryStatus.SUPERSEDED);
+                        m1.setSupersededBy(m2.getId());
+                        m1.setSupersededAt(LocalDateTime.now());
                         m1.setConfidence(Math.max(0.1, (m1.getConfidence() != null ? m1.getConfidence() : 0.5) * 0.5));
                         memoryRepository.save(m1);
                         enqueueOutboxProjections(m1);
                         resolved++;
                     } else if (m2.getLastSeenAt() != null && m1.getLastSeenAt() != null && m1.getLastSeenAt().isAfter(m2.getLastSeenAt())) {
                         m2.setStatus(MemoryStatus.SUPERSEDED);
+                        m2.setSupersededBy(m1.getId());
+                        m2.setSupersededAt(LocalDateTime.now());
                         m2.setConfidence(Math.max(0.1, (m2.getConfidence() != null ? m2.getConfidence() : 0.5) * 0.5));
                         memoryRepository.save(m2);
                         enqueueOutboxProjections(m2);
@@ -270,21 +411,19 @@ public class MemoryConsolidationService {
     /**
      * 5. Confidence Compounding
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int compoundConfidence() {
-        List<Memory> memories = memoryRepository.findAll();
+        List<Memory> memories = memoryRepository.findByStatus(MemoryStatus.CONFIRMED);
         int compounded = 0;
 
         for (Memory m : memories) {
-            if (m.getStatus() == MemoryStatus.CONFIRMED || m.getStatus() == MemoryStatus.OBSERVED || m.getStatus() == MemoryStatus.NEW) {
-                if (m.getObservationCount() != null && m.getObservationCount() >= 3) {
-                    double currentConf = m.getConfidence() != null ? m.getConfidence() : 0.5;
-                    double newConf = Math.min(0.99, currentConf + 0.05);
-                    m.setConfidence(newConf);
-                    m.setStatus(MemoryStatus.CONFIRMED);
-                    memoryRepository.save(m);
-                    compounded++;
-                }
+            if (m.getObservationCount() != null && m.getObservationCount() >= 3) {
+                double currentConf = m.getConfidence() != null ? m.getConfidence() : 0.5;
+                double newConf = Math.min(0.99, currentConf + 0.05);
+                m.setConfidence(newConf);
+                m.setLastConfirmedAt(LocalDateTime.now());
+                memoryRepository.save(m);
+                compounded++;
             }
         }
         return compounded;
@@ -293,7 +432,7 @@ public class MemoryConsolidationService {
     /**
      * 6. Memory Decay for Stale Unreinforced Items
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int decayStaleMemories() {
         List<Memory> memories = memoryRepository.findAll();
         int decayed = 0;
@@ -317,48 +456,117 @@ public class MemoryConsolidationService {
     }
 
     /**
-     * 7. Hotspot Code Activity Consolidation
+     * 7. Hotspot Code Activity Consolidation (Incremental & Database-Backed)
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateHotspots() {
-        List<AgentEvent> recentEvents = agentEventRepository.findTop20ByOrderByCreatedAtDesc();
-        if (recentEvents.isEmpty()) return 0;
+        ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("EVENT_CURSOR");
+        LocalDateTime cursor = checkpoint.getLastProcessedAt();
+
+        List<AgentEvent> batch = (cursor != null)
+                ? agentEventRepository.findByCreatedAtAfterOrderByCreatedAtAsc(cursor, PageRequest.of(0, BATCH_SIZE))
+                : agentEventRepository.findAllByOrderByCreatedAtAsc(PageRequest.of(0, BATCH_SIZE));
+
+        if (batch.isEmpty()) return 0;
 
         int consolidated = 0;
-        Map<String, Integer> fileEditCounts = new HashMap<>();
+        LocalDateTime latestProcessedTime = cursor;
+        Map<String, List<AgentEvent>> fileEvents = new HashMap<>();
 
-        for (AgentEvent event : recentEvents) {
+        for (AgentEvent event : batch) {
             if (event.getFilePath() != null && !event.getFilePath().isBlank()) {
-                fileEditCounts.put(event.getFilePath(), fileEditCounts.getOrDefault(event.getFilePath(), 0) + 1);
+                fileEvents.computeIfAbsent(event.getFilePath(), k -> new ArrayList<>()).add(event);
+            }
+            if (latestProcessedTime == null || (event.getCreatedAt() != null && event.getCreatedAt().isAfter(latestProcessedTime))) {
+                latestProcessedTime = event.getCreatedAt();
             }
         }
 
-        for (Map.Entry<String, Integer> entry : fileEditCounts.entrySet()) {
-            if (entry.getValue() >= 3) {
-                String content = String.format("Hotspot File: %s was modified %d times across recent agent sessions.", entry.getKey(), entry.getValue());
-                boolean exists = memoryRepository.findAll().stream()
-                        .anyMatch(m -> m.getContent() != null && m.getContent().contains(entry.getKey()));
+        for (Map.Entry<String, List<AgentEvent>> entry : fileEvents.entrySet()) {
+            String filePath = entry.getKey();
+            List<AgentEvent> events = entry.getValue();
 
-                if (!exists) {
+            if (events.size() >= 2) {
+                String memoryKey = "HOTSPOT:" + filePath.replaceAll("[^A-Za-z0-9_./-]", "_");
+                String content = String.format("Hotspot File: %s modified %d times across recent agent sessions.", filePath, events.size());
+
+                Set<String> evidence = events.stream()
+                        .map(e -> "event:" + e.getId())
+                        .collect(Collectors.toSet());
+
+                Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
+                if (existingOpt.isPresent()) {
+                    Memory memory = existingOpt.get();
+                    memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + events.size());
+                    memory.getEvidenceSources().addAll(evidence);
+                    memory.setEvidenceCount(memory.getEvidenceSources().size());
+                    memory.setLastSeenAt(LocalDateTime.now());
+                    memoryRepository.save(memory);
+                    enqueueOutboxProjections(memory);
+                    consolidated++;
+                } else {
                     Memory memory = Memory.builder()
+                            .memoryKey(memoryKey)
                             .content(content)
                             .type(MemoryType.PROCEDURAL)
                             .scope(MemoryScope.GLOBAL)
                             .status(MemoryStatus.OBSERVED)
-                            .confidence(0.8)
-                            .importance(0.7)
-                            .observationCount(entry.getValue())
+                            .confidence(0.85)
+                            .importance(0.75)
+                            .observationCount(events.size())
+                            .evidenceCount(evidence.size())
+                            .evidenceSources(evidence)
+                            .provenanceSource("AGENT_EXPERIENCE")
                             .tags(new HashSet<>(Set.of("hotspot", "code-activity", "agent-event")))
                             .firstSeenAt(LocalDateTime.now())
                             .lastSeenAt(LocalDateTime.now())
                             .build();
+
                     Memory saved = memoryRepository.save(memory);
                     enqueueOutboxProjections(saved);
                     consolidated++;
                 }
             }
         }
+
+        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
+        checkpoint.setLastRunStatus("SUCCESS");
+        checkpointRepository.save(checkpoint);
+
         return consolidated;
+    }
+
+    private ConsolidationCheckpoint getOrCreateCheckpoint(String key) {
+        return checkpointRepository.findByCheckpointKey(key)
+                .orElseGet(() -> checkpointRepository.save(ConsolidationCheckpoint.builder()
+                        .checkpointKey(key)
+                        .processedCount(0L)
+                        .lastRunStatus("INITIALIZED")
+                        .build()));
+    }
+
+    private boolean hasSemanticClusterMatches(String topic, String projectKey) {
+        try {
+            List<SearchResult> results = semanticSearchService.searchScoped(
+                    topic, "technical_memory", projectKey.equals("GLOBAL") ? null : projectKey, null, 5
+            );
+            return results.stream().anyMatch(r -> r.getScore() > 0.85f);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private double calculateDiversityConfidence(int evidenceCount, double baseConfidence) {
+        return Math.min(0.98, baseConfidence + Math.log1p(evidenceCount) * 0.03);
+    }
+
+    private void trackTechEvidence(String tech, boolean matched, UUID sessionId, String agent, UUID repo,
+                                   Map<String, Set<String>> agents, Map<String, Set<UUID>> repos, Map<String, Set<UUID>> sessions) {
+        if (!matched) return;
+        agents.computeIfAbsent(tech, k -> new HashSet<>()).add(agent);
+        sessions.computeIfAbsent(tech, k -> new HashSet<>()).add(sessionId);
+        if (repo != null) repos.computeIfAbsent(tech, k -> new HashSet<>()).add(repo);
     }
 
     private void enqueueOutboxProjections(Memory memory) {
@@ -369,6 +577,7 @@ public class MemoryConsolidationService {
                     memory.getId().toString(),
                     Map.of(
                             "id", memory.getId().toString(),
+                            "memoryKey", memory.getMemoryKey() != null ? memory.getMemoryKey() : "",
                             "content", memory.getContent(),
                             "type", memory.getType() != null ? memory.getType().name() : "GENERAL",
                             "scope", memory.getScope() != null ? memory.getScope().name() : "GLOBAL",
@@ -381,6 +590,7 @@ public class MemoryConsolidationService {
                     memory.getId().toString(),
                     Map.of(
                             "id", memory.getId().toString(),
+                            "memoryKey", memory.getMemoryKey() != null ? memory.getMemoryKey() : "",
                             "content", memory.getContent(),
                             "type", memory.getType() != null ? memory.getType().name() : "GENERAL"
                     )

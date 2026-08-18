@@ -30,4 +30,8 @@ public interface MemoryRepository extends JpaRepository<Memory, UUID> {
     List<Memory> findTop10ByOrderByObservationCountDesc();
 
     List<Memory> findTop10ByOrderByLastSeenAtDesc();
+
+    java.util.Optional<Memory> findByMemoryKey(String memoryKey);
+
+    boolean existsByMemoryKey(String memoryKey);
 }
