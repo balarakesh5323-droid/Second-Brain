@@ -20,10 +20,16 @@ import java.util.UUID;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true)
 @Entity
-@Table(name = "agent_outbox", indexes = {
-    @Index(name = "idx_outbox_status_retry", columnList = "status, next_retry_at")
+@Table(name = "agent_outbox", uniqueConstraints = {
+    @UniqueConstraint(name = "uk_agent_outbox_idempotency", columnNames = {"idempotency_key"})
+}, indexes = {
+    @Index(name = "idx_outbox_status_retry", columnList = "status, next_retry_at"),
+    @Index(name = "idx_outbox_processing_stuck", columnList = "status, processing_started_at")
 })
 public class AgentOutbox extends BaseEntity {
+
+    @Column(name = "idempotency_key", nullable = false, updatable = false)
+    private String idempotencyKey;
 
     @Column(name = "session_id")
     private UUID sessionId;
@@ -64,6 +70,9 @@ public class AgentOutbox extends BaseEntity {
 
     @Column(name = "next_retry_at")
     private LocalDateTime nextRetryAt;
+
+    @Column(name = "processing_started_at")
+    private LocalDateTime processingStartedAt;
 
     @Column(name = "processed_at")
     private LocalDateTime processedAt;

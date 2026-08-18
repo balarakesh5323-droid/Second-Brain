@@ -449,7 +449,8 @@ public class GraphService {
             // 4. Problems Encountered
             if (problems != null) {
                 for (Map<String, Object> prob : problems) {
-                    String probId = (String) prob.getOrDefault("id", "prob::" + UUID.randomUUID());
+                    String probTitle = (String) prob.getOrDefault("title", "unknown");
+                    String probId = (String) prob.getOrDefault("id", "prob::" + sessionId + "::" + probTitle.toLowerCase().replaceAll("[^a-z0-9]", "_"));
                     session.run("""
                         MATCH (s:AgentSession {id: $sessionId})
                         MERGE (p:Problem {id: $probId})
@@ -462,7 +463,7 @@ public class GraphService {
             // 5. Decisions Made
             if (decisions != null) {
                 for (Map<String, Object> dec : decisions) {
-                    String decId = (String) dec.getOrDefault("id", "dec::" + UUID.randomUUID());
+                    String decId = (String) dec.getOrDefault("id", "dec::" + sessionId + "::" + dec.getOrDefault("title", "decision").toString().toLowerCase().replaceAll("[^a-z0-9]", "_"));
                     String solvedProblemId = (String) dec.get("solvedProblemId");
                     session.run("""
                         MATCH (s:AgentSession {id: $sessionId})
@@ -483,7 +484,7 @@ public class GraphService {
             // 6. Failed Attempts
             if (failedAttempts != null) {
                 for (Map<String, Object> fa : failedAttempts) {
-                    String faId = (String) fa.getOrDefault("id", "fail::" + UUID.randomUUID());
+                    String faId = (String) fa.getOrDefault("id", "fail::" + sessionId + "::" + fa.getOrDefault("approach", "trial").toString().toLowerCase().replaceAll("[^a-z0-9]", "_"));
                     String relatedProblemId = (String) fa.get("problemId");
                     session.run("""
                         MATCH (s:AgentSession {id: $sessionId})
@@ -504,7 +505,7 @@ public class GraphService {
             // 7. Commits Produced
             if (commits != null) {
                 for (Map<String, Object> c : commits) {
-                    String commitSha = (String) c.getOrDefault("hash", (String) c.getOrDefault("id", "c::" + UUID.randomUUID()));
+                    String commitSha = (String) c.getOrDefault("hash", (String) c.getOrDefault("id", "c::" + sessionId + "::" + c.getOrDefault("message", "commit").toString().hashCode()));
                     session.run("""
                         MATCH (s:AgentSession {id: $sessionId})
                         MERGE (c:Commit {id: $commitSha})

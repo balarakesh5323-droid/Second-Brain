@@ -8,7 +8,6 @@ import com.secondbrain.common.enums.OutboxTarget;
 import com.secondbrain.common.repository.AgentOutboxRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -32,6 +31,13 @@ public class OutboxProjectionService {
 
     @Transactional
     public AgentOutbox enqueue(UUID sessionId, UUID eventId, OutboxTarget target, String aggregateType, String aggregateId, Object payload) {
+        String idempotencyKey = (eventId != null ? eventId.toString() : (sessionId != null ? sessionId.toString() : aggregateId) + ":" + aggregateType) + ":" + target.name();
+
+        var existing = outboxRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+
         String jsonPayload;
         try {
             jsonPayload = (payload instanceof String s) ? s : objectMapper.writeValueAsString(payload);
@@ -40,6 +46,7 @@ public class OutboxProjectionService {
         }
 
         AgentOutbox outbox = AgentOutbox.builder()
+                .idempotencyKey(idempotencyKey)
                 .sessionId(sessionId)
                 .eventId(eventId)
                 .target(target)
@@ -56,18 +63,39 @@ public class OutboxProjectionService {
     }
 
     @Transactional
-    public AgentOutbox enqueueAndProcess(UUID sessionId, UUID eventId, OutboxTarget target, String aggregateType, String aggregateId, Object payload) {
-        AgentOutbox outbox = enqueue(sessionId, eventId, target, aggregateType, aggregateId, payload);
-        processSingleOutbox(outbox);
-        return outbox;
+    public List<AgentOutbox> claimBatch(int limit) {
+        List<AgentOutbox> claimed = outboxRepository.claimReadyForProcessing(LocalDateTime.now(), limit);
+        LocalDateTime now = LocalDateTime.now();
+        for (AgentOutbox item : claimed) {
+            item.setStatus(OutboxStatus.PROCESSING);
+            item.setProcessingStartedAt(now);
+            outboxRepository.save(item);
+        }
+        return claimed;
     }
 
     @Transactional
-    public boolean processSingleOutbox(AgentOutbox outbox) {
-        if (outbox == null) return false;
+    public int recoverStuckProcessing(int timeoutMinutes) {
+        LocalDateTime threshold = LocalDateTime.now().minusMinutes(timeoutMinutes);
+        List<AgentOutbox> stuck = outboxRepository.findStuckProcessing(OutboxStatus.PROCESSING, threshold);
+        for (AgentOutbox item : stuck) {
+            item.setStatus(OutboxStatus.PENDING);
+            item.setLastError("Processing timeout recovery - reset to PENDING");
+            item.setNextRetryAt(LocalDateTime.now());
+            item.setProcessingStartedAt(null);
+            outboxRepository.save(item);
+        }
+        if (!stuck.isEmpty()) {
+            log.info("🔄 Outbox Recovery: Reset {} stuck PROCESSING items back to PENDING", stuck.size());
+        }
+        return stuck.size();
+    }
 
-        outbox.setStatus(OutboxStatus.PROCESSING);
-        outboxRepository.save(outbox);
+    @Transactional
+    public boolean executeProjection(UUID outboxId) {
+        AgentOutbox outbox = outboxRepository.findById(outboxId).orElse(null);
+        if (outbox == null) return false;
+        if (outbox.getStatus() == OutboxStatus.COMPLETED) return true;
 
         try {
             if (outbox.getTarget() == OutboxTarget.NEO4J) {
@@ -94,27 +122,17 @@ public class OutboxProjectionService {
         }
     }
 
-    @Transactional
-    public boolean processSingleOutbox(UUID outboxId) {
-        AgentOutbox outbox = outboxRepository.findById(outboxId).orElse(null);
-        if (outbox == null) return false;
-        return processSingleOutbox(outbox);
-    }
-
-    @Scheduled(fixedDelay = 3000)
-    public void processPendingOutbox() {
-        LocalDateTime now = LocalDateTime.now();
-        List<AgentOutbox> pending = outboxRepository.findReadyToProcess(
-                OutboxStatus.PENDING, OutboxStatus.FAILED, now, PageRequest.of(0, 50));
-
-        if (pending.isEmpty()) return;
-
-        log.debug("Processing {} pending outbox items", pending.size());
-        for (AgentOutbox item : pending) {
-            if (item.getRetryCount() < item.getMaxRetries()) {
-                processSingleOutbox(item.getId());
+    @Scheduled(fixedDelay = 2000)
+    public int processPendingOutbox() {
+        recoverStuckProcessing(5);
+        List<AgentOutbox> claimed = claimBatch(50);
+        int successCount = 0;
+        for (AgentOutbox item : claimed) {
+            if (executeProjection(item.getId())) {
+                successCount++;
             }
         }
+        return successCount;
     }
 
     @SuppressWarnings("unchecked")

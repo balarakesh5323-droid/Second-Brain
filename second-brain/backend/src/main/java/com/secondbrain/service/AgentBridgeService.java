@@ -738,7 +738,7 @@ public class AgentBridgeService {
         graphPayload.put("failedAttempts", List.of());
         graphPayload.put("commits", List.of());
 
-        outboxService.enqueueAndProcess(sessionId, startEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_START", sessionId.toString(), graphPayload);
+        outboxService.enqueue(sessionId, startEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_START", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
@@ -900,7 +900,7 @@ public class AgentBridgeService {
                     "textToEmbed", doc,
                     "payload", p
             );
-            outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "DECISION", pointId, vecPayload);
+            outboxService.enqueue(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "DECISION", pointId, vecPayload);
         }
 
         // 2. Enqueue Outbox for Failed Attempt Vectorization
@@ -921,7 +921,7 @@ public class AgentBridgeService {
                     "textToEmbed", doc,
                     "payload", p
             );
-            outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "FAILED_ATTEMPT", pointId, vecPayload);
+            outboxService.enqueue(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "FAILED_ATTEMPT", pointId, vecPayload);
         }
 
         // 3. Enqueue Outbox for Neo4j Graph Projection
@@ -937,7 +937,7 @@ public class AgentBridgeService {
         graphPayload.put("failedAttempts", failedAttemptsGraph);
         graphPayload.put("commits", commitsGraph);
 
-        outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "EVENT", sessionId.toString(), graphPayload);
+        outboxService.enqueue(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "EVENT", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
@@ -1050,7 +1050,7 @@ public class AgentBridgeService {
         graphPayload.put("commits", List.of());
         if (handoffGraphProps != null) graphPayload.put("handoff", handoffGraphProps);
 
-        outboxService.enqueueAndProcess(sessionId, endEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_COMPLETE", sessionId.toString(), graphPayload);
+        outboxService.enqueue(sessionId, endEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_COMPLETE", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
