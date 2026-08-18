@@ -10,6 +10,12 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.concurrent.locks.ReentrantLock;
 
+/**
+ * Distributed Advisory Lock Service for Second Brain Consolidation.
+ *
+ * Invariant: tryAcquireLock() and releaseLock() must be invoked on the same thread
+ * due to ThreadLocal connection lifecycle binding for PostgreSQL session-level advisory locks.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -24,8 +30,8 @@ public class ConsolidationLockService {
 
     /**
      * Attempts to acquire distributed lock for consolidation.
-     * Keeps the dedicated PostgreSQL connection alive across the entire consolidation run
-     * so that the session-level advisory lock remains active until releaseLock() is called.
+     * In production (PostgreSQL): Session-level advisory lock with fail-closed behavior on errors.
+     * In test (H2): JVM ReentrantLock fallback.
      */
     public boolean tryAcquireLock() {
         Connection conn = null;
@@ -45,21 +51,22 @@ public class ConsolidationLockService {
                         }
                     }
                 }
-                // If lock was not acquired, close connection immediately
+                // Lock was not acquired: close connection immediately and return false
                 conn.close();
-                log.info("🔒 PostgreSQL advisory lock already held by another pod/worker.");
+                log.info("🔒 PostgreSQL advisory lock already held by another pod/worker. Skipping.");
                 return false;
             } else {
-                // In-memory test DB fallback (H2)
+                // Non-PostgreSQL environment (e.g. H2 in testing)
                 conn.close();
                 return localFallbackLock.tryLock();
             }
         } catch (Exception e) {
-            log.warn("Failed acquiring advisory lock, using JVM lock fallback: {}", e.getMessage());
+            log.error("❌ Failed attempting to acquire distributed advisory lock: {}", e.getMessage(), e);
             if (conn != null) {
                 try { conn.close(); } catch (Exception ignored) {}
             }
-            return localFallbackLock.tryLock();
+            // Fail-closed in PostgreSQL environment to prevent split-brain execution
+            return false;
         }
     }
 

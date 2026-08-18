@@ -210,4 +210,51 @@ public class MemoryConsolidationServiceIntegrationTest {
         int memoryCountAfter = memoryRepository.findAll().size();
         assertThat(memoryCountAfter).isEqualTo(memoryCountBefore);
     }
+
+    @Test
+    @DisplayName("Crash Simulation: Mid-batch crash before checkpoint allows idempotent recovery without duplicate memories or inflated evidence")
+    void testCrashRecoveryIdempotency() {
+        // 1. Seed decisions
+        Decision d1 = decisionRepository.save(Decision.builder()
+                .title("Redis Token Revocation Sliding Window")
+                .rationale("High concurrency token blacklist")
+                .repository(testRepo)
+                .project(testProject)
+                .status("APPROVED")
+                .build());
+
+        Decision d2 = decisionRepository.save(Decision.builder()
+                .title("Redis Session Clustering")
+                .rationale("Clustered session state")
+                .repository(testRepo)
+                .project(testProject)
+                .status("APPROVED")
+                .build());
+
+        // 2. First consolidation run
+        consolidationService.runConsolidationCycle();
+
+        Memory memAfterRun1 = memoryRepository.findByMemoryKey("ARCHITECTURAL_STANDARD:" + testProject.getId() + ":REDIS").orElseThrow();
+        int initialObsCount = memAfterRun1.getObservationCount();
+        int initialEvidenceCount = memAfterRun1.getEvidenceCount();
+        int initialTotalMemories = memoryRepository.findAll().size();
+
+        // 3. Simulate crash before checkpoint was advanced: reset checkpoint cursor to null
+        ConsolidationCheckpoint checkpoint = checkpointRepository.findByCheckpointKey("DECISION_CURSOR").orElseThrow();
+        checkpoint.setLastProcessedAt(null);
+        checkpoint.setLastProcessedId(null);
+        checkpointRepository.save(checkpoint);
+
+        // 4. Re-run consolidation on the same data
+        consolidationService.runConsolidationCycle();
+
+        // 5. Assert: Memory count unchanged, observation count unchanged, evidence sources unchanged
+        int finalTotalMemories = memoryRepository.findAll().size();
+        assertThat(finalTotalMemories).isEqualTo(initialTotalMemories);
+
+        Memory memAfterRetry = memoryRepository.findByMemoryKey("ARCHITECTURAL_STANDARD:" + testProject.getId() + ":REDIS").orElseThrow();
+        assertThat(memAfterRetry.getObservationCount()).isEqualTo(initialObsCount);
+        assertThat(memAfterRetry.getEvidenceCount()).isEqualTo(initialEvidenceCount);
+        assertThat(memAfterRetry.getEvidenceSources()).containsExactlyInAnyOrder("decision:" + d1.getId(), "decision:" + d2.getId());
+    }
 }

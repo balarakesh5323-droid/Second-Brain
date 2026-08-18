@@ -116,24 +116,27 @@ public class MemoryConsolidationService {
             Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
 
             if (existingOpt.isPresent()) {
-                // Update existing consolidated memory with new evidence
+                // Update existing consolidated memory with new evidence idempotently
                 Memory memory = existingOpt.get();
-                memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + cluster.size());
-                memory.setLastSeenAt(LocalDateTime.now());
+                int newEvidence = 0;
                 for (Decision d : cluster) {
-                    if (d.getId() != null) {
-                        memory.getEvidenceSources().add("decision:" + d.getId());
+                    if (d.getId() != null && memory.getEvidenceSources().add("decision:" + d.getId())) {
+                        newEvidence++;
                     }
                 }
-                memory.setEvidenceCount(memory.getEvidenceSources().size());
-                memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.92));
-                if (memory.getEvidenceSources().size() >= 3) {
-                    memory.setStatus(MemoryStatus.ESTABLISHED);
-                } else {
-                    memory.setStatus(MemoryStatus.CONFIRMED);
+                if (newEvidence > 0) {
+                    memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 0) + newEvidence);
+                    memory.setEvidenceCount(memory.getEvidenceSources().size());
+                    memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.92));
+                    if (memory.getEvidenceSources().size() >= 3) {
+                        memory.setStatus(MemoryStatus.ESTABLISHED);
+                    } else {
+                        memory.setStatus(MemoryStatus.CONFIRMED);
+                    }
+                    memory.setLastSeenAt(LocalDateTime.now());
+                    memoryRepository.save(memory);
+                    enqueueOutboxProjections(memory);
                 }
-                memoryRepository.save(memory);
-                enqueueOutboxProjections(memory);
                 synthesized++;
             } else if (cluster.size() >= 2 || hasStrongSemanticClusterMatches(topic, projectKey)) {
                 // Synthesize new architectural standard
@@ -212,16 +215,18 @@ public class MemoryConsolidationService {
                 Optional<Memory> existingOpt = memoryRepository.findByMemoryKey(memoryKey);
                 if (existingOpt.isPresent()) {
                     Memory memory = existingOpt.get();
-                    memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 1) + 1);
-                    memory.setLastSeenAt(LocalDateTime.now());
-                    if (fa.getId() != null) memory.getEvidenceSources().add("attempt:" + fa.getId());
-                    memory.setEvidenceCount(memory.getEvidenceSources().size());
-                    memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.95));
-                    if (memory.getEvidenceSources().size() >= 2) {
-                        memory.setStatus(MemoryStatus.ESTABLISHED);
+                    boolean added = fa.getId() != null && memory.getEvidenceSources().add("attempt:" + fa.getId());
+                    if (added) {
+                        memory.setObservationCount((memory.getObservationCount() != null ? memory.getObservationCount() : 0) + 1);
+                        memory.setEvidenceCount(memory.getEvidenceSources().size());
+                        memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.95));
+                        if (memory.getEvidenceSources().size() >= 2) {
+                            memory.setStatus(MemoryStatus.ESTABLISHED);
+                        }
+                        memory.setLastSeenAt(LocalDateTime.now());
+                        memoryRepository.save(memory);
+                        enqueueOutboxProjections(memory);
                     }
-                    memoryRepository.save(memory);
-                    enqueueOutboxProjections(memory);
                     learned++;
                 } else {
                     String content = String.format(

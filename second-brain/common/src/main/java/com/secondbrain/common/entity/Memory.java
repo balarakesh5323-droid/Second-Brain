@@ -22,7 +22,9 @@ import java.util.Set;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true)
 @Entity
-@Table(name = "memories")
+@Table(name = "memories", uniqueConstraints = {
+    @UniqueConstraint(name = "uk_memory_key", columnNames = {"memory_key"})
+})
 public class Memory extends BaseEntity {
 
     @Column(columnDefinition = "text", nullable = false)
