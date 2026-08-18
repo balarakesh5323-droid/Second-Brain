@@ -62,6 +62,12 @@ public class AgentActivityMemoryIntegrationTest {
     @Autowired
     private RepositoryEntityRepository repositoryRepository;
 
+    @Autowired
+    private com.secondbrain.common.repository.AgentOutboxRepository outboxRepository;
+
+    @Autowired
+    private com.secondbrain.service.OutboxProjectionService outboxService;
+
     private Project testProject;
     private RepositoryEntity testRepoA;
     private RepositoryEntity testRepoB;
@@ -467,5 +473,56 @@ public class AgentActivityMemoryIntegrationTest {
             assertThat(sequences.get(i - 1)).isEqualTo((long) i);
         }
         assertThat(sequences.stream().distinct().count()).isEqualTo(21);
+    }
+
+    @Test
+    @DisplayName("10. Outbox: Resilience to downstream failures with automatic retry and projection")
+    void testOutboxProjectionResilienceAndRetry() {
+        // Step A: Start session and verify Outbox creation for Neo4j
+        AgentBridgeService.StartSessionPayload startPayload = AgentBridgeService.StartSessionPayload.builder()
+                .agentName("Claude Code")
+                .repositoryIdOrPath(testRepoA.getId().toString())
+                .task("Outbox Resilience Verification")
+                .build();
+
+        Map<String, Object> startRes = bridgeService.startSession(startPayload);
+        UUID sessionId = (UUID) startRes.get("sessionId");
+
+        var outboxItems = outboxRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+        assertThat(outboxItems).isNotEmpty();
+        assertThat(outboxItems.get(0).getTarget()).isEqualTo(com.secondbrain.common.enums.OutboxTarget.NEO4J);
+        assertThat(outboxItems.get(0).getStatus()).isEqualTo(com.secondbrain.common.enums.OutboxStatus.COMPLETED);
+
+        // Step B: Simulate Qdrant downstream failure
+        Mockito.doThrow(new RuntimeException("Qdrant connection timeout"))
+                .when(vectorStoreService).upsert(anyString(), anyString(), any(), any(), any());
+
+        AgentBridgeService.SessionEventPayload decisionEvent = AgentBridgeService.SessionEventPayload.builder()
+                .eventType("DECISION")
+                .decision(Map.of("title", "Event Sourcing with Outbox", "rationale", "Zero data loss"))
+                .build();
+
+        bridgeService.appendSessionEvent(sessionId, decisionEvent);
+
+        var qdrantOutbox = outboxRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)
+                .stream()
+                .filter(o -> o.getTarget() == com.secondbrain.common.enums.OutboxTarget.QDRANT)
+                .findFirst()
+                .orElse(null);
+
+        assertThat(qdrantOutbox).isNotNull();
+        // Since Qdrant failed, Outbox item is marked PENDING / FAILED with retry count incremented
+        assertThat(qdrantOutbox.getRetryCount()).isGreaterThanOrEqualTo(1);
+        assertThat(qdrantOutbox.getLastError()).contains("Qdrant connection timeout");
+
+        // Step C: Simulate Qdrant recovering and executing retry
+        Mockito.doNothing().when(vectorStoreService).upsert(anyString(), anyString(), any(), any(), any());
+        boolean recovered = outboxService.processSingleOutbox(qdrantOutbox.getId());
+        assertThat(recovered).isTrue();
+
+        var finalState = outboxRepository.findById(qdrantOutbox.getId()).orElseThrow();
+        assertThat(finalState.getStatus()).isEqualTo(com.secondbrain.common.enums.OutboxStatus.COMPLETED);
+        assertThat(finalState.getLastError()).isNull();
+        assertThat(finalState.getProcessedAt()).isNotNull();
     }
 }

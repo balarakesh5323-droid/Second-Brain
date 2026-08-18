@@ -35,6 +35,7 @@ public class AgentBridgeService {
     private final VectorStoreService vectorStoreService;
     private final EmbeddingService embeddingService;
     private final GraphService graphService;
+    private final OutboxProjectionService outboxService;
 
     @Transactional
     public Map<String, Object> ingestActivity(ActivityPayload payload) {
@@ -724,19 +725,20 @@ public class AgentBridgeService {
         sessionProps.put("startedAt", startedAt.toString());
         sessionProps.put("branch", payload.getBranch() != null ? payload.getBranch() : "main");
 
-        graphService.recordAgentSessionGraph(
-                agentName,
-                agentType,
-                sessionId.toString(),
-                sessionProps,
-                repoIdStr,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                null
-        );
+        // 2. Enqueue Outbox projection for Neo4j
+        Map<String, Object> graphPayload = new HashMap<>();
+        graphPayload.put("agentName", agentName);
+        graphPayload.put("agentType", agentType);
+        graphPayload.put("sessionId", sessionId.toString());
+        graphPayload.put("sessionProps", sessionProps);
+        graphPayload.put("repositoryId", repoIdStr);
+        graphPayload.put("touchedFiles", List.of());
+        graphPayload.put("problems", List.of());
+        graphPayload.put("decisions", List.of());
+        graphPayload.put("failedAttempts", List.of());
+        graphPayload.put("commits", List.of());
+
+        outboxService.enqueueAndProcess(sessionId, startEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_START", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
@@ -811,6 +813,7 @@ public class AgentBridgeService {
         String eventDescription = rawType;
         String eventDetails = null;
 
+        Decision savedDecision = null;
         if (payload.getProblem() != null) {
             problemsGraph.add(payload.getProblem());
             eventDescription = "Problem discovered: " + payload.getProblem().getOrDefault("title", "Problem");
@@ -825,33 +828,17 @@ public class AgentBridgeService {
                     .repository(repo)
                     .status("approved")
                     .build();
-            decision = decisionRepository.save(decision);
-            String canonicalDecId = "dec::" + decision.getId().toString();
+            savedDecision = decisionRepository.save(decision);
+            String canonicalDecId = "dec::" + savedDecision.getId().toString();
 
             Map<String, Object> decGraph = new HashMap<>(d);
             decGraph.put("id", canonicalDecId);
             decisionsGraph.add(decGraph);
-            eventDescription = "Decision made: " + decision.getTitle();
-            eventDetails = decision.getRationale();
-
-            try {
-                String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
-                        decision.getTitle(), decision.getTitle(), decision.getRationale());
-                float[] vec = embeddingService.embed(doc);
-                if (vec != null) {
-                    String pointId = decision.getId().toString();
-                    Map<String, String> p = new HashMap<>();
-                    p.put("title", decision.getTitle());
-                    p.put("doc", doc);
-                    if (repo != null) p.put("repositoryId", repo.getId().toString());
-                    vectorStoreService.upsert("decision_knowledge", pointId, vec, p, Map.of());
-                }
-            } catch (Exception e) {
-                log.error("Failed to vectorize decision {}: {}", decision.getId(), e.getMessage());
-                throw new IllegalStateException("Failed to vectorize decision " + decision.getId(), e);
-            }
+            eventDescription = "Decision made: " + savedDecision.getTitle();
+            eventDetails = savedDecision.getRationale();
         }
 
+        AgentAttempt savedAttempt = null;
         if (payload.getFailedAttempt() != null) {
             Map<String, Object> fa = payload.getFailedAttempt();
             AgentAttempt attempt = AgentAttempt.builder()
@@ -865,33 +852,14 @@ public class AgentBridgeService {
                     .repository(repo)
                     .project(project)
                     .build();
-            attempt = attemptRepository.save(attempt);
-            String canonicalFailId = "fail::" + attempt.getId().toString();
+            savedAttempt = attemptRepository.save(attempt);
+            String canonicalFailId = "fail::" + savedAttempt.getId().toString();
 
             Map<String, Object> faGraph = new HashMap<>(fa);
             faGraph.put("id", canonicalFailId);
             failedAttemptsGraph.add(faGraph);
-            eventDescription = "Failed attempt: " + attempt.getApproach();
-            eventDetails = attempt.getErrorMessage();
-
-            try {
-                String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
-                        agentName, repo != null ? repo.getName() : "repo",
-                        fa.get("approach"), fa.get("errorMessage"), fa.get("lessonLearned"));
-                float[] vec = embeddingService.embed(doc);
-                if (vec != null) {
-                    String pointId = attempt.getId().toString();
-                    Map<String, String> p = new HashMap<>();
-                    p.put("agentName", agentName);
-                    p.put("type", "failed_attempt");
-                    p.put("doc", doc);
-                    if (repo != null) p.put("repositoryId", repo.getId().toString());
-                    vectorStoreService.upsert("agent_memory", pointId, vec, p, Map.of());
-                }
-            } catch (Exception e) {
-                log.error("Failed to vectorize failed attempt {}: {}", attempt.getId(), e.getMessage());
-                throw new IllegalStateException("Failed to vectorize failed attempt " + attempt.getId(), e);
-            }
+            eventDescription = "Failed attempt: " + savedAttempt.getApproach();
+            eventDetails = savedAttempt.getErrorMessage();
         }
 
         if (payload.getCommit() != null) {
@@ -916,19 +884,60 @@ public class AgentBridgeService {
                 .build();
         eventRepository.save(agentEvt);
 
-        graphService.recordAgentSessionGraph(
-                agentName,
-                agent != null ? agent.getType() : "CLI",
-                sessionId.toString(),
-                Map.of(),
-                repoIdStr,
-                touchedFiles,
-                problemsGraph,
-                decisionsGraph,
-                failedAttemptsGraph,
-                commitsGraph,
-                null
-        );
+        // 1. Enqueue Outbox for Decision Vectorization
+        if (savedDecision != null) {
+            String doc = String.format("Architectural Decision [%s]: %s. Rationale: %s",
+                    savedDecision.getTitle(), savedDecision.getTitle(), savedDecision.getRationale());
+            String pointId = savedDecision.getId().toString();
+            Map<String, String> p = new HashMap<>();
+            p.put("title", savedDecision.getTitle());
+            p.put("doc", doc);
+            if (repo != null) p.put("repositoryId", repo.getId().toString());
+
+            Map<String, Object> vecPayload = Map.of(
+                    "collection", "decision_knowledge",
+                    "pointId", pointId,
+                    "textToEmbed", doc,
+                    "payload", p
+            );
+            outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "DECISION", pointId, vecPayload);
+        }
+
+        // 2. Enqueue Outbox for Failed Attempt Vectorization
+        if (savedAttempt != null) {
+            String doc = String.format("Failed Attempt by %s in %s: %s (Error: %s). Lesson: %s",
+                    agentName, repo != null ? repo.getName() : "repo",
+                    savedAttempt.getApproach(), savedAttempt.getErrorMessage(), savedAttempt.getLessonLearned());
+            String pointId = savedAttempt.getId().toString();
+            Map<String, String> p = new HashMap<>();
+            p.put("agentName", agentName);
+            p.put("type", "failed_attempt");
+            p.put("doc", doc);
+            if (repo != null) p.put("repositoryId", repo.getId().toString());
+
+            Map<String, Object> vecPayload = Map.of(
+                    "collection", "agent_memory",
+                    "pointId", pointId,
+                    "textToEmbed", doc,
+                    "payload", p
+            );
+            outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.QDRANT, "FAILED_ATTEMPT", pointId, vecPayload);
+        }
+
+        // 3. Enqueue Outbox for Neo4j Graph Projection
+        Map<String, Object> graphPayload = new HashMap<>();
+        graphPayload.put("agentName", agentName);
+        graphPayload.put("agentType", agent != null ? agent.getType() : "CLI");
+        graphPayload.put("sessionId", sessionId.toString());
+        graphPayload.put("sessionProps", Map.of());
+        graphPayload.put("repositoryId", repoIdStr);
+        graphPayload.put("touchedFiles", touchedFiles);
+        graphPayload.put("problems", problemsGraph);
+        graphPayload.put("decisions", decisionsGraph);
+        graphPayload.put("failedAttempts", failedAttemptsGraph);
+        graphPayload.put("commits", commitsGraph);
+
+        outboxService.enqueueAndProcess(sessionId, agentEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "EVENT", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
@@ -1027,19 +1036,21 @@ public class AgentBridgeService {
         sessionProps.put("endedAt", endedAt.toString());
         if (payload.getSummary() != null) sessionProps.put("summary", payload.getSummary());
 
-        graphService.recordAgentSessionGraph(
-                agentName,
-                agent != null ? agent.getType() : "CLI",
-                sessionId.toString(),
-                sessionProps,
-                repoIdStr,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                handoffGraphProps
-        );
+        // Enqueue Outbox for Session Completion Graph Projection
+        Map<String, Object> graphPayload = new HashMap<>();
+        graphPayload.put("agentName", agentName);
+        graphPayload.put("agentType", agent != null ? agent.getType() : "CLI");
+        graphPayload.put("sessionId", sessionId.toString());
+        graphPayload.put("sessionProps", sessionProps);
+        graphPayload.put("repositoryId", repoIdStr);
+        graphPayload.put("touchedFiles", List.of());
+        graphPayload.put("problems", List.of());
+        graphPayload.put("decisions", List.of());
+        graphPayload.put("failedAttempts", List.of());
+        graphPayload.put("commits", List.of());
+        if (handoffGraphProps != null) graphPayload.put("handoff", handoffGraphProps);
+
+        outboxService.enqueueAndProcess(sessionId, endEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_COMPLETE", sessionId.toString(), graphPayload);
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("status", "success");
