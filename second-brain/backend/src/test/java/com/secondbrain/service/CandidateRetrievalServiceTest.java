@@ -17,6 +17,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +40,7 @@ class CandidateRetrievalServiceTest {
     private GraphService graphService;
 
     private CandidateRetrievalService retrievalService;
+    private RelevanceScoringService scoringService;
 
     @BeforeEach
     void setUp() {
@@ -48,52 +50,79 @@ class CandidateRetrievalServiceTest {
                 semanticSearchService,
                 graphService
         );
+        scoringService = new RelevanceScoringService();
     }
 
     @Test
-    @DisplayName("Decisions: Combines recent PostgreSQL decisions with semantic Qdrant hits without duplicates")
-    void testGetDecisionCandidatesHybrid() {
+    @DisplayName("Benchmark: A highly relevant decision from 6 months ago beats an unrelated decision from yesterday")
+    void testHistoricalRelevantDecisionBeatsRecentUnrelatedDecision() {
         UUID repoId = UUID.randomUUID();
         UUID projId = UUID.randomUUID();
 
-        UUID recentDecId = UUID.randomUUID();
-        Decision recentDecision = Decision.builder()
-                .title("PostgreSQL Connection Pooling")
+        // Yesterday's unrelated decision
+        UUID yesterdayId = UUID.randomUUID();
+        Decision yesterdayDecision = Decision.builder()
+                .title("Update navbar button CSS styling and hover glow")
+                .rationale("Aesthetic modernization")
                 .build();
-        recentDecision.setId(recentDecId);
-        recentDecision.setCreatedAt(LocalDateTime.now());
+        yesterdayDecision.setId(yesterdayId);
+        yesterdayDecision.setCreatedAt(LocalDateTime.now().minusDays(1));
 
-        UUID semanticDecId = UUID.randomUUID();
-        Decision historicalSemanticDecision = Decision.builder()
-                .title("Historical Redis Blacklist Decision from 6 Months Ago")
+        // 6-Month-old highly relevant decision
+        UUID historicalId = UUID.randomUUID();
+        Decision historicalDecision = Decision.builder()
+                .title("Redis Sliding Window Token Revocation Architecture")
+                .rationale("Distributed token blacklist with Redis TTL for horizontal pod scale")
                 .build();
-        historicalSemanticDecision.setId(semanticDecId);
-        historicalSemanticDecision.setCreatedAt(LocalDateTime.now().minusMonths(6));
+        historicalDecision.setId(historicalId);
+        historicalDecision.setCreatedAt(LocalDateTime.now().minusMonths(6));
 
-        // 1. Mock recent queries
+        // 1. Mock recent queries (returns yesterday's decision)
         when(decisionRepository.findByRepositoryIdOrderByCreatedAtDesc(eq(repoId), any(Pageable.class)))
-                .thenReturn(List.of(recentDecision));
+                .thenReturn(List.of(yesterdayDecision));
         when(decisionRepository.findByProjectIdOrderByCreatedAtDesc(eq(projId), any(Pageable.class)))
                 .thenReturn(List.of());
 
-        // 2. Mock semantic query
+        // 2. Mock semantic query (returns 6-month-old historical decision)
         SearchResult semanticMatch = SearchResult.builder()
-                .id(semanticDecId.toString())
-                .score(0.95f)
-                .payload(Map.of("decisionId", semanticDecId.toString(), "title", "Historical Redis Blacklist"))
+                .id(historicalId.toString())
+                .score(0.96f)
+                .payload(Map.of("decisionId", historicalId.toString(), "title", "Redis Sliding Window Token Revocation"))
                 .build();
 
         when(semanticSearchService.searchScoped(eq("Redis Token Revocation"), eq("technical_memory"), eq(projId.toString()), eq(repoId.toString()), anyInt()))
                 .thenReturn(List.of(semanticMatch));
 
-        when(decisionRepository.findById(semanticDecId))
-                .thenReturn(Optional.of(historicalSemanticDecision));
+        when(decisionRepository.findById(historicalId))
+                .thenReturn(Optional.of(historicalDecision));
 
-        // Execute
+        // Retrieve candidates
         List<Decision> candidates = retrievalService.getDecisionCandidates("Redis Token Revocation", repoId, projId);
-
         assertThat(candidates).hasSize(2);
-        assertThat(candidates).extracting(Decision::getId).containsExactly(recentDecId, semanticDecId);
+
+        // Score through unified RelevanceScoringService
+        Set<String> taskTokens = scoringService.extractTokens("Redis Token Revocation");
+        var scoredYesterday = scoringService.scoreCandidate(
+                yesterdayDecision, yesterdayDecision.getTitle() + " " + yesterdayDecision.getRationale(),
+                repoId, projId, repoId, projId, "auth-repo", yesterdayDecision.getCreatedAt(), taskTokens
+        );
+        var scoredHistorical = scoringService.scoreCandidate(
+                historicalDecision, historicalDecision.getTitle() + " " + historicalDecision.getRationale(),
+                repoId, projId, repoId, projId, "auth-repo", historicalDecision.getCreatedAt(), taskTokens
+        );
+
+        List<RelevanceScoringService.ScoredCandidate<Decision>> ranked = scoringService.rankAndFilter(
+                List.of(scoredYesterday, scoredHistorical), RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
+        );
+
+        // Historical relevant decision MUST rank #1 with high relevance
+        assertThat(ranked).isNotEmpty();
+        assertThat(ranked.get(0).getItem().getId()).isEqualTo(historicalId);
+        assertThat(ranked.get(0).getRelevance()).isGreaterThan(0.60);
+        assertThat(ranked.get(0).getReason()).containsIgnoringCase("redis");
+
+        // Yesterday's unrelated decision must either be filtered out or have low relevance
+        assertThat(scoredYesterday.getRelevance()).isLessThan(0.30);
     }
 
     @Test
@@ -128,31 +157,33 @@ class CandidateRetrievalServiceTest {
     }
 
     @Test
-    @DisplayName("Symbols: Resolves repository symbols and falls back to project sibling libraries")
-    void testGetSymbolCandidates() {
+    @DisplayName("Quality Fallback: Triggers project-wide symbol search when repo symbols have low score")
+    void testQualityBasedSymbolFallback() {
         UUID repoId = UUID.randomUUID();
         UUID projId = UUID.randomUUID();
 
-        SearchResult repoSymbol = SearchResult.builder()
-                .id("sym-1")
-                .score(0.88f)
+        // Low quality repo symbol (0.42 < 0.65 threshold)
+        SearchResult weakRepoSymbol = SearchResult.builder()
+                .id("sym-weak")
+                .score(0.42f)
+                .content("unrelatedHelper")
+                .build();
+
+        // High quality sibling repo symbol (0.91)
+        SearchResult strongSiblingSymbol = SearchResult.builder()
+                .id("sym-strong")
+                .score(0.91f)
                 .content("validateToken")
                 .build();
 
-        SearchResult siblingSymbol = SearchResult.builder()
-                .id("sym-2")
-                .score(0.91f)
-                .content("TokenCodec")
-                .build();
-
         when(semanticSearchService.searchScoped(eq("validateToken"), eq("symbol_knowledge"), eq(projId.toString()), eq(repoId.toString()), anyInt()))
-                .thenReturn(List.of(repoSymbol));
+                .thenReturn(List.of(weakRepoSymbol));
         when(semanticSearchService.searchScoped(eq("validateToken"), eq("symbol_knowledge"), eq(projId.toString()), isNull(), anyInt()))
-                .thenReturn(List.of(siblingSymbol));
+                .thenReturn(List.of(strongSiblingSymbol));
 
         List<SearchResult> symbols = retrievalService.getSymbolCandidates("validateToken", repoId, projId);
 
         assertThat(symbols).hasSize(2);
-        assertThat(symbols).extracting(SearchResult::getId).containsExactly("sym-1", "sym-2");
+        assertThat(symbols).extracting(SearchResult::getId).containsExactly("sym-weak", "sym-strong");
     }
 }
