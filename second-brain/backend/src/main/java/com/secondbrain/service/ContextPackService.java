@@ -25,12 +25,24 @@ public class ContextPackService {
     private final GitService gitService;
     private final CandidateRetrievalService candidateRetrievalService;
     private final RelevanceScoringService relevanceScoringService;
+    private final CurrentStateService currentStateService;
 
     public Map<String, Object> assembleContextPack(String task, String repoIdOrPath, String projectId) {
         log.info("Assembling 1-Shot Context Pack for task: '{}', repo: '{}'", task, repoIdOrPath);
 
         Map<String, Object> pack = new LinkedHashMap<>();
         pack.put("task", task != null ? task : "General engineering task");
+
+        // 0. Current Work State Snapshot & Hand-off Briefing
+        if (currentStateService != null) {
+            try {
+                var currentState = currentStateService.getCurrentState(repoIdOrPath, projectId, task);
+                pack.put("currentState", currentState);
+                pack.put("currentStateBriefing", currentState.getFormattedBriefing());
+            } catch (Exception e) {
+                log.debug("Current state synthesis error in context pack: {}", e.getMessage());
+            }
+        }
 
         // 1. Resolve Primary Repository & Project
         RepositoryEntity primaryRepo = resolveRepository(repoIdOrPath);

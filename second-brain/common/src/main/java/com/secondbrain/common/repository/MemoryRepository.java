@@ -34,4 +34,10 @@ public interface MemoryRepository extends JpaRepository<Memory, UUID> {
     java.util.Optional<Memory> findByMemoryKey(String memoryKey);
 
     boolean existsByMemoryKey(String memoryKey);
+
+    List<Memory> findByProjectIdAndStatusInOrderByConfidenceDesc(UUID projectId, List<MemoryStatus> statuses, org.springframework.data.domain.Pageable pageable);
+
+    List<Memory> findByStatusInOrderByConfidenceDesc(List<MemoryStatus> statuses, org.springframework.data.domain.Pageable pageable);
+
+    List<Memory> findByRepositoryIdAndStatusInOrderByConfidenceDesc(UUID repositoryId, List<MemoryStatus> statuses, org.springframework.data.domain.Pageable pageable);
 }

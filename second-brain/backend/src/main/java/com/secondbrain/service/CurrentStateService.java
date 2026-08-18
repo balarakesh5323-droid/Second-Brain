@@ -1,6 +1,7 @@
 package com.secondbrain.service;
 
 import com.secondbrain.common.dto.CurrentStateResponse;
+import com.secondbrain.common.dto.SearchResult;
 import com.secondbrain.common.entity.*;
 import com.secondbrain.common.enums.MemoryStatus;
 import com.secondbrain.common.enums.TaskStatus;
@@ -27,8 +28,10 @@ public class CurrentStateService {
     private final TaskRepository taskRepository;
     private final MemoryRepository memoryRepository;
     private final GitService gitService;
+    private final SemanticSearchService semanticSearchService;
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    private static final List<MemoryStatus> ACTIVE_STATUSES = List.of(MemoryStatus.ESTABLISHED, MemoryStatus.CONFIRMED);
 
     @Transactional(readOnly = true)
     public CurrentStateResponse getCurrentState(String repoIdOrName, String projectIdOrName, String targetTask) {
@@ -41,15 +44,29 @@ public class CurrentStateService {
         CurrentStateResponse.CurrentStateResponseBuilder builder = CurrentStateResponse.builder()
                 .repository(repo != null ? repo.getName() : (repoIdOrName != null ? repoIdOrName : "Global"))
                 .project(project != null ? project.getName() : (projectIdOrName != null ? projectIdOrName : "Default"))
-                .task(targetTask != null ? targetTask : "Active development");
+                .task(targetTask != null ? targetTask : "Active engineering task");
 
-        // 1. Git State
+        // 1. Working Tree & Git State
+        List<String> modifiedFiles = new ArrayList<>();
+        List<String> untrackedFiles = new ArrayList<>();
+        List<String> deletedFiles = new ArrayList<>();
+
         if (repo != null && repo.getPath() != null) {
             try {
                 var gitStatus = gitService.getWorkingTreeStatus(repo.getPath());
                 builder.gitBranch(gitService.getCurrentBranch(repo.getPath()))
                         .gitStatus((String) gitStatus.get("state"))
                         .modifiedFilesCount((Integer) gitStatus.get("modifiedCount"));
+
+                if (gitStatus.get("modifiedFiles") instanceof List<?> list) {
+                    for (Object item : list) if (item != null) modifiedFiles.add(item.toString());
+                }
+                if (gitStatus.get("untrackedFiles") instanceof List<?> list) {
+                    for (Object item : list) if (item != null) untrackedFiles.add(item.toString());
+                }
+                if (gitStatus.get("missingFiles") instanceof List<?> list) {
+                    for (Object item : list) if (item != null) deletedFiles.add(item.toString());
+                }
 
                 var logEntries = gitService.getRecentCommits(repo.getPath(), 1);
                 if (!logEntries.isEmpty()) {
@@ -61,6 +78,9 @@ public class CurrentStateService {
                 builder.gitStatus("UNKNOWN");
             }
         }
+        builder.modifiedFiles(modifiedFiles)
+                .untrackedFiles(untrackedFiles)
+                .deletedFiles(deletedFiles);
 
         // 2. Last Active Agent & Session
         List<AgentSession> recentSessions;
@@ -81,38 +101,42 @@ public class CurrentStateService {
                     .lastActiveTimestamp(lastSession.getCreatedAt() != null ? lastSession.getCreatedAt().format(DATE_FMT) : "Recent");
         }
 
-        // 3. Completed & In-Progress Items
-        List<String> completed = new ArrayList<>();
-        List<String> inProgress = new ArrayList<>();
-        List<String> knownIssues = new ArrayList<>();
+        // 3. Distinct Task vs Attempt Lifecycle
+        List<String> completedTasks = new ArrayList<>();
+        List<String> inProgressTasks = new ArrayList<>();
+        List<String> currentBlockers = new ArrayList<>();
 
         if (projId != null) {
             List<Task> tasks = taskRepository.findByProjectId(projId);
             for (Task t : tasks) {
                 if (t.getStatus() == TaskStatus.COMPLETED) {
-                    completed.add(t.getTitle());
+                    completedTasks.add(t.getTitle());
                 } else if (t.getStatus() == TaskStatus.IN_PROGRESS) {
-                    inProgress.add(t.getTitle());
+                    inProgressTasks.add(t.getTitle());
                 } else if (t.getStatus() == TaskStatus.BLOCKED) {
-                    knownIssues.add("Blocked Task: " + t.getTitle() + (t.getDescription() != null ? " (" + t.getDescription() + ")" : ""));
+                    currentBlockers.add(t.getTitle() + (t.getDescription() != null ? ": " + t.getDescription() : ""));
                 }
             }
         }
 
-        // 4. Attempts (Successes & Failures)
+        // 4. Distinct Successful vs Failed Attempts
+        List<String> successfulAttempts = new ArrayList<>();
+        List<String> activeTrials = new ArrayList<>();
+        List<CurrentStateResponse.FailureItem> historicalFailures = new ArrayList<>();
+        CurrentStateResponse.LastFailureSummary lastFail = null;
+
         List<AgentAttempt> attempts;
         if (repoId != null) {
-            attempts = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, 10));
+            attempts = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repoId, PageRequest.of(0, 15));
         } else if (projId != null) {
-            attempts = attemptRepository.findByProjectIdOrderByCreatedAtDesc(projId, PageRequest.of(0, 10));
+            attempts = attemptRepository.findByProjectIdOrderByCreatedAtDesc(projId, PageRequest.of(0, 15));
         } else {
-            attempts = attemptRepository.findAllOrderByCreatedAtDesc(PageRequest.of(0, 10));
+            attempts = attemptRepository.findAllOrderByCreatedAtDesc(PageRequest.of(0, 15));
         }
 
-        CurrentStateResponse.LastFailureSummary lastFail = null;
         for (AgentAttempt a : attempts) {
             if ("SUCCESS".equalsIgnoreCase(a.getStatus())) {
-                completed.add(a.getTaskDescription() != null ? a.getTaskDescription() : a.getApproach());
+                successfulAttempts.add(a.getTaskDescription() != null ? a.getTaskDescription() + " (" + a.getApproach() + ")" : a.getApproach());
             } else if ("FAILURE".equalsIgnoreCase(a.getStatus()) || "FAILED".equalsIgnoreCase(a.getStatus())) {
                 if (lastFail == null) {
                     lastFail = CurrentStateResponse.LastFailureSummary.builder()
@@ -122,35 +146,34 @@ public class CurrentStateService {
                             .lessonLearned(a.getLessonLearned())
                             .build();
                 }
-                if (a.getErrorMessage() != null) {
-                    knownIssues.add(a.getTaskDescription() + ": " + a.getErrorMessage());
-                }
+                historicalFailures.add(CurrentStateResponse.FailureItem.builder()
+                        .agentName(a.getAgentName())
+                        .task(a.getTaskDescription())
+                        .approach(a.getApproach())
+                        .errorMessage(a.getErrorMessage())
+                        .lessonLearned(a.getLessonLearned())
+                        .build());
             } else if ("IN_PROGRESS".equalsIgnoreCase(a.getStatus())) {
-                inProgress.add(a.getTaskDescription() != null ? a.getTaskDescription() : a.getApproach());
+                activeTrials.add(a.getTaskDescription() != null ? a.getTaskDescription() + " (Approach: " + a.getApproach() + ")" : a.getApproach());
             }
         }
 
-        builder.completedItems(completed.stream().distinct().limit(10).toList())
-                .inProgressItems(inProgress.stream().distinct().limit(10).toList())
-                .knownIssues(knownIssues.stream().distinct().limit(10).toList())
+        builder.completedTasks(completedTasks.stream().distinct().limit(8).toList())
+                .inProgressTasks(inProgressTasks.stream().distinct().limit(8).toList())
+                .successfulAttempts(successfulAttempts.stream().distinct().limit(8).toList())
+                .activeTrials(activeTrials.stream().distinct().limit(8).toList())
+                .currentBlockers(currentBlockers.stream().distinct().limit(8).toList())
+                .historicalFailures(historicalFailures.stream().limit(5).toList())
                 .lastFailedAttempt(lastFail);
 
-        // 5. Relevant Established Brain Knowledge
-        List<String> establishedKnowledge = new ArrayList<>();
-        List<Memory> memories = memoryRepository.findAll().stream()
-                .filter(m -> m.getStatus() == MemoryStatus.ESTABLISHED || m.getStatus() == MemoryStatus.CONFIRMED)
-                .filter(m -> {
-                    if (projId != null && m.getProject() != null) {
-                        return m.getProject().getId().equals(projId);
-                    }
-                    return true;
-                })
-                .limit(8)
-                .toList();
-
-        for (Memory m : memories) {
-            establishedKnowledge.add(m.getContent());
-        }
+        // 5. Scalable Task-Aware Semantic Memory Retrieval (Zero findAll())
+        List<String> establishedKnowledge = retrieveTaskRelevantKnowledge(
+                targetTask,
+                projId != null ? projId.toString() : null,
+                repoId != null ? repoId.toString() : null,
+                projId,
+                repoId
+        );
         builder.relevantEstablishedKnowledge(establishedKnowledge);
 
         // 6. Build Formatted Markdown Briefing
@@ -165,22 +188,81 @@ public class CurrentStateService {
         return builder.build();
     }
 
+    /**
+     * Retrieves task-relevant established memories via Qdrant semantic vector search with DB fallback.
+     * Guaranteed O(1) database bounded retrieval without full table scans.
+     */
+    private List<String> retrieveTaskRelevantKnowledge(String targetTask, String projIdStr, String repoIdStr, UUID projId, UUID repoId) {
+        Set<String> resultKnowledge = new LinkedHashSet<>();
+
+        // A. Semantic Retrieval from Qdrant if task query is specified
+        if (targetTask != null && !targetTask.isBlank() && semanticSearchService != null) {
+            try {
+                List<SearchResult> semanticHits = semanticSearchService.searchScoped(
+                        targetTask, "agent_memory", projIdStr, repoIdStr, 8
+                );
+                for (SearchResult hit : semanticHits) {
+                    if (hit.getContent() != null && !hit.getContent().isBlank()) {
+                        resultKnowledge.add(hit.getContent());
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Semantic memory search unavailable for current state: {}", e.getMessage());
+            }
+        }
+
+        // B. Bounded Database Query Fallback if semantic results < 8
+        if (resultKnowledge.size() < 8) {
+            int needed = 8 - resultKnowledge.size();
+            List<Memory> dbMemories;
+            if (repoId != null) {
+                dbMemories = memoryRepository.findByRepositoryIdAndStatusInOrderByConfidenceDesc(repoId, ACTIVE_STATUSES, PageRequest.of(0, needed));
+            } else if (projId != null) {
+                dbMemories = memoryRepository.findByProjectIdAndStatusInOrderByConfidenceDesc(projId, ACTIVE_STATUSES, PageRequest.of(0, needed));
+            } else {
+                dbMemories = memoryRepository.findByStatusInOrderByConfidenceDesc(ACTIVE_STATUSES, PageRequest.of(0, needed));
+            }
+
+            for (Memory m : dbMemories) {
+                if (m.getContent() != null && !m.getContent().isBlank()) {
+                    resultKnowledge.add(m.getContent());
+                }
+            }
+        }
+
+        return new ArrayList<>(resultKnowledge);
+    }
+
     private String buildBriefing(String repoName, String projectName, String targetTask, CurrentStateResponse state) {
         StringBuilder sb = new StringBuilder();
-        sb.append("# 📍 Second Brain: Current Work State Briefing\n\n");
+        sb.append("╔════════════════════════════════════════════════════════════════════════════╗\n");
+        sb.append("║                   🧠 SECOND BRAIN: CURRENT WORK STATE BRIEFING             ║\n");
+        sb.append("╚════════════════════════════════════════════════════════════════════════════╝\n\n");
         sb.append("**Repository:** `").append(repoName).append("` | **Project:** `").append(projectName).append("`\n");
         if (targetTask != null && !targetTask.isBlank()) {
             sb.append("**Target Task:** *").append(targetTask).append("*\n");
         }
         sb.append("\n---\n\n");
 
+        // Working tree & Git State
         sb.append("## 🌿 Working Tree & Git Status\n");
         sb.append("- **Branch:** `").append(state.getGitBranch() != null ? state.getGitBranch() : "main").append("`\n");
-        sb.append("- **Status:** `").append(state.getGitStatus() != null ? state.getGitStatus() : "CLEAN").append("`");
-        if (state.getModifiedFilesCount() != null) {
-            sb.append(" (").append(state.getModifiedFilesCount()).append(" modified files)");
+        sb.append("- **Working Tree State:** `").append(state.getGitStatus() != null ? state.getGitStatus() : "CLEAN").append("`");
+        if (state.getModifiedFilesCount() != null && state.getModifiedFilesCount() > 0) {
+            sb.append(" (").append(state.getModifiedFilesCount()).append(" uncommitted modified files)");
         }
         sb.append("\n");
+
+        if (!state.getModifiedFiles().isEmpty()) {
+            sb.append("  - **Modified:** `").append(String.join("`, `", state.getModifiedFiles())).append("`\n");
+        }
+        if (!state.getUntrackedFiles().isEmpty()) {
+            sb.append("  - **Untracked:** `").append(String.join("`, `", state.getUntrackedFiles())).append("`\n");
+        }
+        if (!state.getDeletedFiles().isEmpty()) {
+            sb.append("  - **Deleted:** `").append(String.join("`, `", state.getDeletedFiles())).append("`\n");
+        }
+
         if (state.getLastCommitSha() != null) {
             sb.append("- **Last Commit:** `").append(state.getLastCommitSha()).append("` — *").append(state.getLastCommitMessage()).append("*\n");
         }
@@ -189,26 +271,41 @@ public class CurrentStateService {
         }
         sb.append("\n");
 
-        sb.append("## ✅ Completed Work\n");
-        if (state.getCompletedItems().isEmpty()) {
+        // Working tree safety warning
+        if (state.getModifiedFilesCount() != null && state.getModifiedFilesCount() > 0) {
+            sb.append("> [!WARNING]\n");
+            sb.append("> **Active Uncommitted Changes:** There are uncommitted changes in the working tree. DO NOT overwrite or discard them without verifying prior agent progress.\n\n");
+        }
+
+        // Completed Work (Tasks vs Attempts)
+        sb.append("## ✅ Completed Tasks & Successful Trials\n");
+        if (state.getCompletedTasks().isEmpty() && state.getSuccessfulAttempts().isEmpty()) {
             sb.append("- *No completed items recorded yet.*\n");
         } else {
-            for (String c : state.getCompletedItems()) {
-                sb.append("- ").append(c).append("\n");
+            for (String t : state.getCompletedTasks()) {
+                sb.append("- ✓ **Task:** ").append(t).append("\n");
+            }
+            for (String a : state.getSuccessfulAttempts()) {
+                sb.append("- ✓ **Trial:** ").append(a).append("\n");
             }
         }
         sb.append("\n");
 
-        sb.append("## 🔄 In Progress\n");
-        if (state.getInProgressItems().isEmpty()) {
+        // In Progress Work
+        sb.append("## 🔄 In Progress Tasks & Active Trials\n");
+        if (state.getInProgressTasks().isEmpty() && state.getActiveTrials().isEmpty()) {
             sb.append("- *No active in-progress items.*\n");
         } else {
-            for (String ip : state.getInProgressItems()) {
-                sb.append("- ").append(ip).append("\n");
+            for (String t : state.getInProgressTasks()) {
+                sb.append("- ⏳ **Task:** ").append(t).append("\n");
+            }
+            for (String a : state.getActiveTrials()) {
+                sb.append("- ⏳ **Trial:** ").append(a).append("\n");
             }
         }
         sb.append("\n");
 
+        // Last Failed Trial
         if (state.getLastFailedAttempt() != null) {
             var fail = state.getLastFailedAttempt();
             sb.append("## 🔴 Last Failed Trial\n");
@@ -223,18 +320,20 @@ public class CurrentStateService {
             sb.append("\n");
         }
 
-        if (!state.getKnownIssues().isEmpty()) {
-            sb.append("## ⚠️ Known Issues & Blockers\n");
-            for (String issue : state.getKnownIssues()) {
-                sb.append("- ").append(issue).append("\n");
+        // Current Blockers
+        if (!state.getCurrentBlockers().isEmpty()) {
+            sb.append("## ⚠️ Current Blockers\n");
+            for (String blocker : state.getCurrentBlockers()) {
+                sb.append("- ⛔ ").append(blocker).append("\n");
             }
             sb.append("\n");
         }
 
+        // Relevant Brain Knowledge
         if (!state.getRelevantEstablishedKnowledge().isEmpty()) {
             sb.append("## 🧠 Relevant Established Knowledge\n");
             for (String k : state.getRelevantEstablishedKnowledge()) {
-                sb.append("- ").append(k).append("\n");
+                sb.append("- • ").append(k).append("\n");
             }
             sb.append("\n");
         }

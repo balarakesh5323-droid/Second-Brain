@@ -223,6 +223,11 @@ public class GitService {
                     statusMap.put("addedCount", stagedAdded);
                     statusMap.put("removedCount", stagedRemoved);
                     statusMap.put("missingCount", unstagedMissing);
+                    statusMap.put("modifiedFiles", new ArrayList<>(status.getModified()));
+                    statusMap.put("untrackedFiles", new ArrayList<>(status.getUntracked()));
+                    statusMap.put("missingFiles", new ArrayList<>(status.getMissing()));
+                    statusMap.put("addedFiles", new ArrayList<>(status.getAdded()));
+                    statusMap.put("removedFiles", new ArrayList<>(status.getRemoved()));
                 }
             }
         } catch (Throwable t) {
