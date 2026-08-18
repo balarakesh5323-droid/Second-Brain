@@ -165,8 +165,8 @@ class CurrentStateServiceTest {
         // Verify Next Action Recommendations
         assertThat(state.getNextRecommendedActions()).isNotEmpty();
         assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("CRITICAL") && r.getAction().contains("Awaiting DevOps IAM role"));
-        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("HIGH") && r.getAction().contains("Redis atomic SETNX"));
-        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("MEDIUM") && r.getAction().contains("AuthService.java"));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("HIGH") && r.getAction().contains("Investigate failure in 'Guava JVM Cache'") && r.getWarnings().stream().anyMatch(w -> w.contains("Redis atomic SETNX")));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("MEDIUM") && r.getAction().contains("Inspect uncommitted modified files") && r.getReason().contains("AuthService.java"));
 
         // Verify Formatted Briefing
         String briefing = state.getFormattedBriefing();

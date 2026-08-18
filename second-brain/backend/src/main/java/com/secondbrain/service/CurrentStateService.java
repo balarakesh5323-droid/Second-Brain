@@ -288,10 +288,17 @@ public class CurrentStateService {
 
         // Priority 2: Last Failed Trial Investigation
         if (lastFail != null) {
+            List<String> failWarnings = new ArrayList<>();
+            failWarnings.add("Avoid repeating approach: " + lastFail.getApproach());
+            if (lastFail.getLessonLearned() != null && !lastFail.getLessonLearned().isBlank()) {
+                failWarnings.add("Lesson learned: " + lastFail.getLessonLearned());
+            }
+
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
-                    .action("Avoid repeated failure in approach: " + lastFail.getApproach() + " (Lesson: " + (lastFail.getLessonLearned() != null ? lastFail.getLessonLearned() : "Refer to error log") + ")")
-                    .reason("Previous trial failed with error: " + lastFail.getFailureReason())
+                    .action("Investigate failure in '" + lastFail.getApproach() + "' and implement a validated alternative architecture")
+                    .reason("Previous trial by " + lastFail.getAgentName() + " failed with error: " + lastFail.getFailureReason())
+                    .warnings(failWarnings)
                     .evidence(List.of("AgentAttemptFailure:" + lastFail.getAgentName()))
                     .build());
         }
@@ -317,8 +324,9 @@ public class CurrentStateService {
         if (!modifiedFiles.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("MEDIUM")
-                    .action("Inspect uncommitted modified files in working tree (" + String.join(", ", modifiedFiles) + ")")
-                    .reason("Previous agent left dirty changes in the working tree; verify before editing")
+                    .action("Inspect uncommitted modified files in working tree before editing")
+                    .reason("Previous agent left dirty changes (" + String.join(", ", modifiedFiles) + ")")
+                    .warnings(List.of("Verify prior agent work before overwriting"))
                     .evidence(modifiedFiles)
                     .build());
         }
@@ -447,6 +455,11 @@ public class CurrentStateService {
             for (var rec : state.getNextRecommendedActions()) {
                 sb.append("- **[").append(rec.getPriority()).append("]** ").append(rec.getAction())
                         .append(" *(Reason: ").append(rec.getReason()).append(")*\n");
+                if (!rec.getWarnings().isEmpty()) {
+                    for (String w : rec.getWarnings()) {
+                        sb.append("  - ⚠️ ").append(w).append("\n");
+                    }
+                }
             }
             sb.append("\n");
         }

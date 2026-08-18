@@ -136,10 +136,20 @@ public class BrainToolHandler {
                 .projectId(projectId)
                 .build();
             var res = agentBridgeService.startSession(payload);
-            return new CallToolResult(List.of(new TextContent(
-                "Session started with ID: " + res.get("sessionId") + " (Status: " + res.get("sessionStatus") + ")")), false);
+
+            String sessionId = res.get("sessionId") != null ? res.get("sessionId").toString() : "";
+            var currentState = currentStateService.getCurrentState(repositoryId, projectId, task);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("🚀 **Second Brain Session Initialized**\n");
+            sb.append("- **Session ID:** `").append(sessionId).append("`\n");
+            sb.append("- **Agent:** `").append(agentName).append("`\n");
+            sb.append("- **Status:** `").append(res.get("sessionStatus")).append("`\n\n");
+            sb.append(currentState.getFormattedBriefing());
+
+            return new CallToolResult(List.of(new TextContent(sb.toString())), false);
         } catch (Exception e) {
-            return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
+            return new CallToolResult(List.of(new TextContent("Error starting session: " + e.getMessage())), true);
         }
     }
 

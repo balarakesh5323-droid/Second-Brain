@@ -31,10 +31,11 @@ public class CurrentStateResponse {
     private String lastCommitSha;
     private String lastCommitMessage;
 
-    // Active Agent & Session
+    // Active Agent & Session Lineage
     private String lastActiveAgent;
     private String lastActiveSessionId;
     private String lastActiveTimestamp;
+    private String inheritedFromSessionId;
 
     // Distinct Task vs Attempt Lifecycle
     @Builder.Default
@@ -94,6 +95,8 @@ public class CurrentStateResponse {
         private String priority; // CRITICAL, HIGH, MEDIUM, LOW
         private String action;
         private String reason;
+        @Builder.Default
+        private List<String> warnings = new ArrayList<>();
         @Builder.Default
         private List<String> evidence = new ArrayList<>();
     }

@@ -107,6 +107,10 @@ public class VectorStoreService {
     }
 
     public List<Map<String, Object>> searchWithFilter(String collectionName, float[] vector, Map<String, String> mustFilters, int limit) {
+        return searchWithAdvancedFilter(collectionName, vector, mustFilters, Map.of(), limit);
+    }
+
+    public List<Map<String, Object>> searchWithAdvancedFilter(String collectionName, float[] vector, Map<String, String> mustFilters, Map<String, List<String>> mustMatchAnyFilters, int limit) {
         if (vector == null) return List.of();
         try {
             Points.SearchPoints.Builder searchBuilder = Points.SearchPoints.newBuilder()
@@ -114,11 +118,27 @@ public class VectorStoreService {
                     .addAllVector(toFloatList(vector))
                     .setLimit(limit);
 
-            if (mustFilters != null && !mustFilters.isEmpty()) {
+            boolean hasFilters = (mustFilters != null && !mustFilters.isEmpty()) || (mustMatchAnyFilters != null && !mustMatchAnyFilters.isEmpty());
+            if (hasFilters) {
                 io.qdrant.client.grpc.Common.Filter.Builder filterBuilder = io.qdrant.client.grpc.Common.Filter.newBuilder();
-                for (Map.Entry<String, String> entry : mustFilters.entrySet()) {
-                    if (entry.getValue() != null && !entry.getValue().isBlank()) {
-                        filterBuilder.addMust(io.qdrant.client.ConditionFactory.matchKeyword(entry.getKey(), entry.getValue()));
+                if (mustFilters != null) {
+                    for (Map.Entry<String, String> entry : mustFilters.entrySet()) {
+                        if (entry.getValue() != null && !entry.getValue().isBlank()) {
+                            filterBuilder.addMust(io.qdrant.client.ConditionFactory.matchKeyword(entry.getKey(), entry.getValue()));
+                        }
+                    }
+                }
+                if (mustMatchAnyFilters != null) {
+                    for (Map.Entry<String, List<String>> entry : mustMatchAnyFilters.entrySet()) {
+                        if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                            io.qdrant.client.grpc.Common.Filter.Builder shouldBuilder = io.qdrant.client.grpc.Common.Filter.newBuilder();
+                            for (String val : entry.getValue()) {
+                                if (val != null && !val.isBlank()) {
+                                    shouldBuilder.addShould(io.qdrant.client.ConditionFactory.matchKeyword(entry.getKey(), val));
+                                }
+                            }
+                            filterBuilder.addMust(io.qdrant.client.ConditionFactory.filter(shouldBuilder.build()));
+                        }
                     }
                 }
                 searchBuilder.setFilter(filterBuilder.build());

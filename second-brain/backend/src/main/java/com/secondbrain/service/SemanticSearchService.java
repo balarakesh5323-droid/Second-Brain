@@ -41,8 +41,14 @@ public class SemanticSearchService {
             }
         }
 
-        int overfetchLimit = (allowedStatuses != null && !allowedStatuses.isEmpty()) ? Math.max(limit * 3, 20) : limit;
-        List<Map<String, Object>> points = vectorStoreService.searchWithFilter(collectionName, queryVector, mustFilters, overfetchLimit);
+        Map<String, List<String>> mustMatchAny = new HashMap<>();
+        if (allowedStatuses != null && !allowedStatuses.isEmpty()) {
+            mustMatchAny.put("status", allowedStatuses);
+        }
+
+        List<Map<String, Object>> points = vectorStoreService.searchWithAdvancedFilter(
+                collectionName, queryVector, mustFilters, mustMatchAny, limit
+        );
         
         return points.stream()
             .map(point -> {
@@ -60,7 +66,7 @@ public class SemanticSearchService {
             .filter(res -> {
                 if (allowedStatuses == null || allowedStatuses.isEmpty()) return true;
                 Object statusObj = res.getPayload().get("status");
-                if (statusObj == null) return true; // untyped memory collections allowed
+                if (statusObj == null) return false; // Strict safety: null/untyped status is rejected from authoritative knowledge
                 String statusStr = statusObj.toString().toUpperCase();
                 return allowedStatuses.stream().anyMatch(statusStr::equalsIgnoreCase);
             })
