@@ -281,6 +281,7 @@ Always conclude your session cleanly by writing structured handoff notes for the
 | MCP Tool Name | Description & Use Case | Key Arguments |
 | :--- | :--- | :--- |
 | `brain_context_pack` | **Flagship 1-Shot Multi-Modal Briefing**: Assembles repo state, handoffs, decisions, failures, warnings, and next steps in 1 call. | `task`, `repository`, `project` |
+| `brain_get_current_state` | **1-Shot Agent State Briefing**: Working tree git status, completed items, active in-progress work, last failed attempt (with lesson learned), known blockers, and established knowledge. | `repository`, `project`, `task` |
 | `brain_get_work_history` | **Cross-Agent Work Narrative & Continuity**: Detailed chronological history of prior trials, failed attempts, lessons learned, and decisions by Claude Code, Codex, Cursor, etc. | `repository`, `project`, `task`, `limit` |
 | `brain_start_session` | Begins an incremental agent session with durable sequence tracking. | `agent_name`, `task`, `repository_id`, `project_id` |
 | `brain_record_event` | Durable append-only event (`DECISION_MADE`, `FAILED_ATTEMPT`, `PROBLEM_DISCOVERED`, `FILE_TOUCHED`, `GIT_COMMIT`). | `session_id`, `event_type`, `decision`, `failed_attempt`, `commit`, `file_path` |

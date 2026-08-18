@@ -523,6 +523,20 @@ public class SecondBrainMcpServer {
                     String task = (String) args.get("task");
                     Integer limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : null;
                     return toolHandler.handleGetWorkHistory(repository, project, task, limit);
+                }),
+
+            buildTool("brain_get_current_state",
+                "Retrieve 1-shot current work state briefing: working tree git status, completed items, active in-progress work, last failed attempt (with lesson learned), known issues/blockers, and relevant established brain knowledge.",
+                "object", Map.of(
+                    "repository", Map.of("type", "string", "description", "Repository name or path"),
+                    "project", Map.of("type", "string", "description", "Optional project name or ID"),
+                    "task", Map.of("type", "string", "description", "Optional active target task description")
+                ), List.of(),
+                (exchange, args) -> {
+                    String repository = (String) args.get("repository");
+                    String project = (String) args.get("project");
+                    String task = (String) args.get("task");
+                    return toolHandler.handleGetCurrentState(repository, project, task);
                 })
         );
     }

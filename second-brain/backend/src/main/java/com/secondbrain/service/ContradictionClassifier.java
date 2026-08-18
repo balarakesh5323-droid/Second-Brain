@@ -49,17 +49,17 @@ public class ContradictionClassifier {
     }
 
     /**
-     * Classifies relations between a proposed knowledge item and a bounded top-K candidate set of existing memories.
-     * Batches all candidates into a single LLM request to scale in O(1) LLM round-trips.
+     * Classifies relations between a proposed knowledge item and a pre-ranked candidate set of existing memories.
+     * Enforces strict safety parity: both LLM proposals and semantic fallback pass through the scope-aware safety gate.
      */
-    public Set<String> findContradictoryMemoryKeys(String newKnowledge, List<Memory> existingMemories) {
+    public Set<String> findContradictoryMemoryKeys(String newKnowledge, List<Memory> rankedCandidateMemories) {
         Set<String> contradictoryKeys = new HashSet<>();
-        if (existingMemories == null || existingMemories.isEmpty() || newKnowledge == null || newKnowledge.isBlank()) {
+        if (rankedCandidateMemories == null || rankedCandidateMemories.isEmpty() || newKnowledge == null || newKnowledge.isBlank()) {
             return contradictoryKeys;
         }
 
-        // Limit to top 10 candidates to bound evaluation cost
-        List<Memory> candidateBatch = existingMemories.stream()
+        // Bounded to top 10 ranked candidates to maintain O(1) performance
+        List<Memory> candidateBatch = rankedCandidateMemories.stream()
                 .filter(m -> m != null && m.getContent() != null && m.getMemoryKey() != null)
                 .limit(10)
                 .toList();
@@ -72,11 +72,10 @@ public class ContradictionClassifier {
             if (!batchedResults.isEmpty()) {
                 for (Map.Entry<String, Relation> entry : batchedResults.entrySet()) {
                     if (entry.getValue() == Relation.CONTRADICTORY) {
-                        // Validate contradiction against scope & false positives
                         Memory cand = candidateBatch.stream().filter(m -> m.getMemoryKey().equals(entry.getKey())).findFirst().orElse(null);
                         if (cand != null && validateGenuineContradiction(newKnowledge, cand.getContent())) {
                             contradictoryKeys.add(entry.getKey());
-                            log.info("⚔️ Verified Contradiction: Proposed [{}] supersedes [{}]", newKnowledge, entry.getKey());
+                            log.info("⚔️ Verified LLM Contradiction: Proposed [{}] supersedes [{}]", newKnowledge, entry.getKey());
                         }
                     }
                 }
@@ -86,11 +85,12 @@ public class ContradictionClassifier {
             log.debug("Batched LLM contradiction classification unavailable: {}", e.getMessage());
         }
 
-        // 2. Deterministic Semantic Context Fallback
+        // 2. Deterministic Semantic Context Fallback (passes through same safety gate)
         for (Memory cand : candidateBatch) {
             Relation rel = fallbackSemanticClassify(newKnowledge, cand.getContent());
-            if (rel == Relation.CONTRADICTORY) {
+            if (rel == Relation.CONTRADICTORY && validateGenuineContradiction(newKnowledge, cand.getContent())) {
                 contradictoryKeys.add(cand.getMemoryKey());
+                log.info("⚔️ Verified Fallback Contradiction: Proposed [{}] supersedes [{}]", newKnowledge, cand.getMemoryKey());
             }
         }
 
@@ -157,18 +157,55 @@ public class ContradictionClassifier {
     }
 
     /**
-     * Secondary validation guardrail: prevents refinements or complementary rules from falsely superseding existing memories.
+     * Scope-Aware Contradiction Validation Guardrail:
+     * Prevents false positives by distinguishing environment scopes (dev vs prod), sub-detail refinements,
+     * and ensuring genuine paradigm negation before allowing supersession.
      */
-    private boolean validateGenuineContradiction(String newText, String oldText) {
+    public boolean validateGenuineContradiction(String newText, String oldText) {
+        if (newText == null || oldText == null) return false;
         String sNew = newText.toLowerCase().trim();
         String sOld = oldText.toLowerCase().trim();
 
-        // If new text is simply an addition of details (like adding TTL, encryption, or port), it is a refinement, not a negation
-        if (sNew.contains(sOld) || (sNew.startsWith(sOld.substring(0, Math.min(sOld.length(), 20))) && !sNew.contains("no longer") && !sNew.contains("deprecated"))) {
+        // 1. Environment & Scope separation:
+        // "local development cache" vs "production distributed cache" do not contradict
+        boolean oldIsDevOnly = (sOld.contains("dev") || sOld.contains("local")) && !sOld.contains("prod");
+        boolean newIsProdOnly = (sNew.contains("prod") || sNew.contains("production") || sNew.contains("cluster")) && !sNew.contains("dev") && !sNew.contains("local");
+        if (oldIsDevOnly && newIsProdOnly) {
+            return false; // Complementary environment rules, not a contradiction
+        }
+
+        // 2. Explicit negation or deprecation of the older pattern
+        boolean hasNegation = sNew.contains("deprecated") || sNew.contains("no longer") ||
+                sNew.contains("do not use") || sNew.contains("replaced by") || sNew.contains("superseded");
+        if (hasNegation) {
+            return true;
+        }
+
+        // 3. Competing paradigms in the exact same domain
+        boolean sameDomain = (sNew.contains("token") && sOld.contains("token")) ||
+                (sNew.contains("session") && sOld.contains("session")) ||
+                (sNew.contains("cache") && sOld.contains("cache")) ||
+                (sNew.contains("queue") && sOld.contains("queue"));
+
+        if (sameDomain) {
+            // Paradigm shift from in-memory/polling to distributed Redis/Kafka
+            if ((sNew.contains("redis") || sNew.contains("distributed")) && sOld.contains("in-memory")) {
+                return true;
+            }
+            if (sNew.contains("redis streams") && sOld.contains("polling")) {
+                return true;
+            }
+            if ((sNew.contains("caffeine") || sNew.contains("in-memory")) && sOld.contains("redis")) {
+                return true;
+            }
+        }
+
+        // 4. Refinement detection: If new text just adds sub-details (e.g. TTL, cluster mode, encryption), reject supersession
+        if (sNew.contains(sOld) || sOld.contains(sNew)) {
             return false;
         }
 
-        return true;
+        return false;
     }
 
     public Relation fallbackSemanticClassify(String newText, String oldText) {

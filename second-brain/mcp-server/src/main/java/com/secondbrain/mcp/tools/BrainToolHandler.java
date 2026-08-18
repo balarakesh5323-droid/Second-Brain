@@ -49,6 +49,7 @@ public class BrainToolHandler {
     private final com.secondbrain.service.ContextPackService contextPackService;
     private final com.secondbrain.service.MemoryConsolidationService memoryConsolidationService;
     private final com.secondbrain.service.WorkHistoryService workHistoryService;
+    private final com.secondbrain.service.CurrentStateService currentStateService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -927,6 +928,16 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Failed fetching work history", e);
             return new CallToolResult(List.of(new TextContent("Error fetching work history: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetCurrentState(String repository, String project, String task) {
+        try {
+            var response = currentStateService.getCurrentState(repository, project, task);
+            return new CallToolResult(List.of(new TextContent(response.getFormattedBriefing())), false);
+        } catch (Exception e) {
+            log.error("Failed fetching current work state", e);
+            return new CallToolResult(List.of(new TextContent("Error fetching current work state: " + e.getMessage())), true);
         }
     }
 
