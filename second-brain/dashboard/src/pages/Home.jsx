@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { brainApi } from '../api/client';
-import { Activity, Database, FolderGit2, Users, CheckCircle, Clock } from 'lucide-react';
+import { Activity, Database, FolderGit2, Users, CheckCircle, Clock, Bookmark } from 'lucide-react';
 
 function StatCard({ icon: Icon, label, value, color }) {
   return (
@@ -45,6 +45,7 @@ export default function Home() {
         <StatCard icon={CheckCircle} label="Open Tasks" value={taskList.length} color="bg-yellow-600/20 text-yellow-400" />
         <StatCard icon={Activity} label="Recent Events" value={eventList.length} color="bg-red-600/20 text-red-400" />
         <StatCard icon={Clock} label="Decisions" value={decisionList.length} color="bg-cyan-600/20 text-cyan-400" />
+        <StatCard icon={Bookmark} label="Checkpoints" value={eventList.filter(e => e.eventType === 'SESSION_CHECKPOINT').length} color="bg-amber-600/20 text-amber-400" />
       </div>
 
       {/* Recent Activity */}
@@ -53,9 +54,9 @@ export default function Home() {
         {eventList.length > 0 ? (
           <div className="space-y-3">
             {eventList.slice(0, 10).map((event) => (
-              <div key={event.id} className="flex items-center gap-3 text-sm">
-                <span className="px-2 py-1 rounded bg-gray-800 text-gray-300 text-xs font-mono">
-                  {event.eventType}
+              <div key={event.id} className={`flex items-center gap-3 text-sm ${event.eventType === 'SESSION_CHECKPOINT' ? 'bg-amber-950/20 border border-amber-900/30 rounded-lg p-3' : ''}`}>
+                <span className={`px-2 py-1 rounded text-xs font-mono ${event.eventType === 'SESSION_CHECKPOINT' ? 'bg-amber-900/60 text-amber-300 border border-amber-700/50' : 'bg-gray-800 text-gray-300'}`}>
+                  {event.eventType === 'SESSION_CHECKPOINT' ? 'CHECKPOINT' : event.eventType}
                 </span>
                 <span className="text-gray-300">{event.description}</span>
                 <span className="text-gray-500 ml-auto text-xs">

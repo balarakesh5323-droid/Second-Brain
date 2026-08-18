@@ -25,5 +25,6 @@ public enum EventType {
     TASK_COMPLETED,
     TASK_BLOCKED,
     HANDOFF_CREATED,
+    SESSION_CHECKPOINT,
     SESSION_ENDED
 }

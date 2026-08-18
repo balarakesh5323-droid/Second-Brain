@@ -695,25 +695,44 @@ public class AgentBridgeService {
         RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
         Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
 
-        // Detect parent session for cross-agent lineage & automatic handoff
+        // Detect parent session for cross-agent lineage & automatic handoff (Database-Bounded Query)
         UUID parentSessionId = null;
         String inheritedFromAgent = null;
         String handoffReason = null;
+        String targetTask = payload.getTask() != null ? payload.getTask().trim() : "";
 
-        List<AgentSession> previousSessions = (repo != null)
-                ? sessionRepository.findByRepositoryId(repo.getId())
-                : (project != null ? sessionRepository.findByProjectId(project.getId()) : List.of());
+        if (repo != null && agent.getId() != null) {
+            // Priority A: Exact or matching task predecessor on this repository
+            if (!targetTask.isBlank()) {
+                String firstKeyword = targetTask.split("\\s+")[0];
+                List<AgentSession> taskMatches = sessionRepository.findMatchingPredecessorsByTask(
+                        repo.getId(), agent.getId(), firstKeyword, PageRequest.of(0, 1)
+                );
+                if (!taskMatches.isEmpty()) {
+                    AgentSession prev = taskMatches.get(0);
+                    parentSessionId = prev.getId();
+                    inheritedFromAgent = prev.getAgent() != null ? prev.getAgent().getName() : "previous-agent";
+                    handoffReason = "TASK_CONTINUITY";
+                    log.info("🎯 Cross-Agent Task Lineage Established: Agent '{}' continues task '{}' from '{}' (Session: {})",
+                            agentName, targetTask, inheritedFromAgent, parentSessionId);
+                }
+            }
 
-        if (!previousSessions.isEmpty()) {
-            List<AgentSession> sorted = new ArrayList<>(previousSessions);
-            sorted.sort(Comparator.comparing((AgentSession s) -> s.getCreatedAt() != null ? s.getCreatedAt() : LocalDateTime.MIN).reversed());
-            AgentSession previous = sorted.get(0);
-            if (previous.getAgent() != null && !previous.getAgent().getId().equals(agent.getId())) {
-                parentSessionId = previous.getId();
-                inheritedFromAgent = previous.getAgent().getName();
-                handoffReason = "CROSS_AGENT_CONTINUITY";
-                log.info("🔄 Cross-Agent Lineage Established: Agent '{}' inherits from previous Agent '{}' (Session: {})",
-                        agentName, inheritedFromAgent, parentSessionId);
+            // Priority B: Active repository predecessor within the last 24 hours
+            if (parentSessionId == null) {
+                List<AgentSession> repoMatches = sessionRepository.findRecentPredecessorsByRepo(
+                        repo.getId(), agent.getId(), PageRequest.of(0, 1)
+                );
+                if (!repoMatches.isEmpty()) {
+                    AgentSession prev = repoMatches.get(0);
+                    if (prev.getStartedAt() != null && prev.getStartedAt().isAfter(LocalDateTime.now().minusHours(24))) {
+                        parentSessionId = prev.getId();
+                        inheritedFromAgent = prev.getAgent() != null ? prev.getAgent().getName() : "previous-agent";
+                        handoffReason = "RECENT_REPO_CONTINUITY";
+                        log.info("🔄 Cross-Agent Repo Lineage Established: Agent '{}' inherits active workspace from '{}' (Session: {})",
+                                agentName, inheritedFromAgent, parentSessionId);
+                    }
+                }
             }
         }
 
@@ -1311,5 +1330,130 @@ public class AgentBridgeService {
         RepositoryEntity repo = resolveRepository(repoIdOrPath, repoIdOrPath);
         String repoId = repo != null ? repo.getId().toString() : repoIdOrPath;
         return graphService.getAgentTimeline(repoId, limit);
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SessionCheckpointPayload {
+        private String sessionId;
+        private String currentTask;
+        private String status;
+        private List<String> completed;
+        private List<String> workingOn;
+        private List<String> blockers;
+        private List<String> decisions;
+        private List<String> filesModified;
+    }
+
+    @Transactional
+    public Map<String, Object> checkpointSession(SessionCheckpointPayload payload) {
+        if (payload.getSessionId() == null || payload.getSessionId().isBlank()) {
+            throw new IllegalArgumentException("sessionId is required for checkpointing");
+        }
+        UUID sessId = UUID.fromString(payload.getSessionId());
+        AgentSession session = sessionRepository.findById(sessId)
+                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + payload.getSessionId()));
+
+        long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
+        session.setEventSequence(nextSeq);
+        if (payload.getCurrentTask() != null && !payload.getCurrentTask().isBlank()) {
+            session.setTask(payload.getCurrentTask());
+        }
+        sessionRepository.save(session);
+
+        // Immutable Checkpoint Event
+        AgentEvent cpEvt = AgentEvent.builder()
+                .session(session)
+                .sequenceNumber(nextSeq)
+                .eventType(com.secondbrain.common.enums.EventType.SESSION_CHECKPOINT)
+                .description("Session checkpoint: " + (payload.getCurrentTask() != null ? payload.getCurrentTask() : session.getTask()))
+                .details(payload.getFilesModified() != null ? String.join(", ", payload.getFilesModified()) : null)
+                .processingStatus("COMPLETED")
+                .build();
+        eventRepository.save(cpEvt);
+
+        // Outbox projection to Neo4j
+        Map<String, Object> graphProps = new HashMap<>();
+        graphProps.put("sessionId", sessId.toString());
+        graphProps.put("checkpointSeq", nextSeq);
+        graphProps.put("currentTask", payload.getCurrentTask());
+        graphProps.put("completed", payload.getCompleted() != null ? payload.getCompleted() : List.of());
+        graphProps.put("workingOn", payload.getWorkingOn() != null ? payload.getWorkingOn() : List.of());
+        graphProps.put("blockers", payload.getBlockers() != null ? payload.getBlockers() : List.of());
+        graphProps.put("filesModified", payload.getFilesModified() != null ? payload.getFilesModified() : List.of());
+
+        outboxService.enqueue(sessId, cpEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_CHECKPOINT", sessId.toString(), graphProps);
+
+        return Map.of(
+                "status", "success",
+                "sessionId", sessId.toString(),
+                "checkpointSequence", nextSeq,
+                "timestamp", LocalDateTime.now().toString()
+        );
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class EndSessionPayload {
+        private String sessionId;
+        private String status; // COMPLETED, FAILED, PAUSED
+        private String summary;
+        private List<String> completedTasks;
+        private List<Map<String, String>> failedAttempts;
+        private List<String> lessons;
+        private List<String> remainingWork;
+        private String commitSha;
+    }
+
+    @Transactional
+    public Map<String, Object> endSession(EndSessionPayload payload) {
+        if (payload.getSessionId() == null || payload.getSessionId().isBlank()) {
+            throw new IllegalArgumentException("sessionId is required to end session");
+        }
+        UUID sessId = UUID.fromString(payload.getSessionId());
+        AgentSession session = sessionRepository.findById(sessId)
+                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + payload.getSessionId()));
+
+        long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
+        session.setEventSequence(nextSeq);
+        session.setStatus(payload.getStatus() != null ? payload.getStatus() : "COMPLETED");
+        session.setEndedAt(LocalDateTime.now());
+        if (payload.getSummary() != null && !payload.getSummary().isBlank()) {
+            session.setSummary(payload.getSummary());
+        }
+        sessionRepository.save(session);
+
+        // Record immutable SESSION_ENDED event
+        AgentEvent endEvt = AgentEvent.builder()
+                .session(session)
+                .sequenceNumber(nextSeq)
+                .eventType(com.secondbrain.common.enums.EventType.SESSION_ENDED)
+                .description("Session concluded with status: " + session.getStatus() + ". Summary: " + (payload.getSummary() != null ? payload.getSummary() : "Done"))
+                .processingStatus("COMPLETED")
+                .build();
+        eventRepository.save(endEvt);
+
+        // Enqueue Outbox projection for Neo4j
+        Map<String, Object> graphProps = new HashMap<>();
+        graphProps.put("sessionId", sessId.toString());
+        graphProps.put("status", session.getStatus());
+        graphProps.put("endedAt", session.getEndedAt().toString());
+        graphProps.put("summary", session.getSummary());
+        graphProps.put("completedTasks", payload.getCompletedTasks() != null ? payload.getCompletedTasks() : List.of());
+        graphProps.put("remainingWork", payload.getRemainingWork() != null ? payload.getRemainingWork() : List.of());
+        graphProps.put("commitSha", payload.getCommitSha());
+
+        outboxService.enqueue(sessId, endEvt.getId(), com.secondbrain.common.enums.OutboxTarget.NEO4J, "SESSION_END", sessId.toString(), graphProps);
+
+        return Map.of(
+                "status", "success",
+                "sessionId", sessId.toString(),
+                "sessionStatus", session.getStatus(),
+                "endedAt", session.getEndedAt().toString()
+        );
     }
 }

@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { brainApi } from '../api/client';
-import { Bot, Terminal, AlertTriangle, CheckCircle, ShieldAlert, Sparkles, BookOpen, Clock, FileCode, Layers } from 'lucide-react';
+import { Bot, Terminal, AlertTriangle, CheckCircle, ShieldAlert, Sparkles, BookOpen, Clock, FileCode, Layers, Bookmark } from 'lucide-react';
 
 export default function AgentActivity() {
-  const [activeTab, setActiveTab] = useState('attempts'); // 'attempts' | 'timeline' | 'sessions'
+  const [activeTab, setActiveTab] = useState('attempts'); // 'attempts' | 'timeline' | 'sessions' | 'checkpoints'
 
   const { data: attempts, isLoading: attemptsLoading } = useQuery({
     queryKey: ['attempts'],
@@ -24,6 +24,7 @@ export default function AgentActivity() {
   const attemptList = Array.isArray(attempts) ? attempts : [];
   const eventList = Array.isArray(events) ? events : [];
   const sessionList = Array.isArray(sessions) ? sessions : [];
+  const checkpointEvents = eventList.filter(e => e.eventType === 'SESSION_CHECKPOINT');
 
   return (
     <div className="space-y-6">
@@ -66,6 +67,15 @@ export default function AgentActivity() {
           >
             <Layers className="w-3.5 h-3.5" />
             Sessions ({sessionList.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('checkpoints')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition ${
+              activeTab === 'checkpoints' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            <Bookmark className="w-3.5 h-3.5" />
+            Checkpoints ({checkpointEvents.length})
           </button>
         </div>
       </div>
@@ -200,11 +210,11 @@ export default function AgentActivity() {
               <div className="space-y-6">
                 {eventList.map((event) => (
                   <div key={event.id} className="relative pl-10">
-                    <div className="absolute left-2.5 top-1 w-3 h-3 rounded-full bg-indigo-500" />
-                    <div className="bg-gray-800/80 border border-gray-700/60 rounded-lg p-4">
+                    <div className={`absolute left-2.5 top-1 w-3 h-3 rounded-full ${event.eventType === 'SESSION_CHECKPOINT' ? 'bg-amber-500' : 'bg-indigo-500'}`} />
+                    <div className={`border rounded-lg p-4 ${event.eventType === 'SESSION_CHECKPOINT' ? 'bg-amber-950/20 border-amber-900/40' : 'bg-gray-800/80 border-gray-700/60'}`}>
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="px-2 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/60 text-xs font-mono font-semibold">
-                          {event.eventType}
+                        <span className={`px-2 py-1 rounded text-xs font-mono font-semibold ${event.eventType === 'SESSION_CHECKPOINT' ? 'bg-amber-950 text-amber-300 border border-amber-800/60' : 'bg-indigo-950 text-indigo-300 border border-indigo-800/60'}`}>
+                          {event.eventType === 'SESSION_CHECKPOINT' ? 'CHECKPOINT' : event.eventType}
                         </span>
                         <span className="text-xs text-gray-400 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
@@ -266,6 +276,71 @@ export default function AgentActivity() {
             </div>
           ) : (
             <p className="text-gray-500 text-sm">No agent sessions active</p>
+          )}
+        </div>
+      )}
+
+      {/* TAB 4: SESSION CHECKPOINTS */}
+      {activeTab === 'checkpoints' && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 className="text-lg font-semibold mb-4 text-gray-100 flex items-center gap-2">
+            <Bookmark className="w-5 h-5 text-indigo-400" />
+            Session Checkpoints & Crash Recovery
+          </h3>
+          <p className="text-xs text-gray-400 mb-4">
+            Intermediate session snapshots for instant crash recovery and handoff preservation. Each checkpoint captures progress, blockers, and modified files.
+          </p>
+          {eventsLoading ? (
+            <div className="text-gray-500 text-sm py-4">Loading checkpoints...</div>
+          ) : checkpointEvents.length > 0 ? (
+            <div className="space-y-4">
+              {checkpointEvents.map((event) => (
+                <div key={event.id} className="border border-amber-900/40 bg-amber-950/20 rounded-xl p-5 hover:border-amber-700/60 transition">
+                  <div className="flex items-start justify-between gap-4 mb-3">
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-1">
+                        <span className="font-semibold text-gray-100 text-base">Session Checkpoint</span>
+                        <span className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-amber-900/60 text-amber-300 border border-amber-700/50 flex items-center gap-1.5">
+                          <Bookmark className="w-3.5 h-3.5" />
+                          CHECKPOINT
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 font-mono">
+                        {event.createdAt ? new Date(event.createdAt).toLocaleString() : ''}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {event.description && (
+                    <div className="mb-3 bg-gray-900/70 rounded-lg p-3 border border-gray-800">
+                      <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold block mb-1">Description:</span>
+                      <p className="text-sm text-gray-200">{event.description}</p>
+                    </div>
+                  )}
+                  
+                  {event.details && (
+                    <div className="bg-gray-900/70 border border-gray-800 rounded-lg p-3">
+                      <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold block mb-1">Modified Files:</span>
+                      <div className="flex items-center gap-2 flex-wrap mt-2">
+                        {event.details.split(', ').map((file, i) => (
+                          <span key={i} className="text-xs bg-gray-900 text-gray-300 px-2 py-0.5 rounded border border-gray-800 font-mono">
+                            {file}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 border border-dashed border-gray-800 rounded-xl">
+              <Bookmark className="w-10 h-10 text-gray-600 mx-auto mb-3" />
+              <p className="text-gray-400 text-sm font-medium">No session checkpoints recorded yet</p>
+              <p className="text-gray-600 text-xs mt-1">
+                Checkpoints are created automatically via <code className="text-amber-400">brain_checkpoint_session</code> MCP tool during agent sessions.
+              </p>
+            </div>
           )}
         </div>
       )}

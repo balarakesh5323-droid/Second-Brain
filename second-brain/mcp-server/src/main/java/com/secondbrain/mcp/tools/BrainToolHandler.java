@@ -153,6 +153,26 @@ public class BrainToolHandler {
         }
     }
 
+    public CallToolResult handleCheckpointSession(String sessionId, String currentTask, List<String> completed,
+            List<String> workingOn, List<String> blockers, List<String> decisions, List<String> filesModified) {
+        try {
+            var payload = AgentBridgeService.SessionCheckpointPayload.builder()
+                .sessionId(sessionId)
+                .currentTask(currentTask)
+                .completed(completed)
+                .workingOn(workingOn)
+                .blockers(blockers)
+                .decisions(decisions)
+                .filesModified(filesModified)
+                .build();
+            var res = agentBridgeService.checkpointSession(payload);
+            return new CallToolResult(List.of(new TextContent(
+                "💾 Session Checkpoint #" + res.get("checkpointSequence") + " Recorded for Session `" + sessionId + "`")), false);
+        } catch (Exception e) {
+            return new CallToolResult(List.of(new TextContent("Error checkpointing session: " + e.getMessage())), true);
+        }
+    }
+
     public CallToolResult handleEndSession(String sessionId, String summary) {
         return handleCompleteSession(sessionId, "COMPLETED", summary, null);
     }

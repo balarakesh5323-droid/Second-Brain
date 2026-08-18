@@ -132,6 +132,33 @@ public class SecondBrainMcpServer {
                     return toolHandler.handleStartSession(agentName, task, repositoryId, projectId);
                 }),
 
+            buildTool("brain_checkpoint_session",
+                "Record an intermediate session checkpoint (tasks, modified files, blockers, decisions) for instant crash recovery and handoff preservation.",
+                "object", Map.of(
+                    "session_id", Map.of("type", "string", "description", "Session UUID"),
+                    "current_task", Map.of("type", "string", "description", "Current task being worked on"),
+                    "completed", Map.of("type", "array", "description", "List of completed items in this turn"),
+                    "working_on", Map.of("type", "array", "description", "List of active items in progress"),
+                    "blockers", Map.of("type", "array", "description", "List of current blockers encountered"),
+                    "decisions", Map.of("type", "array", "description", "List of technical decisions made"),
+                    "files_modified", Map.of("type", "array", "description", "List of files modified in this turn")
+                ), List.of("session_id"),
+                (exchange, args) -> {
+                    String sessionId = (String) args.get("session_id");
+                    String currentTask = (String) args.get("current_task");
+                    @SuppressWarnings("unchecked")
+                    List<String> completed = (List<String>) args.get("completed");
+                    @SuppressWarnings("unchecked")
+                    List<String> workingOn = (List<String>) args.get("working_on");
+                    @SuppressWarnings("unchecked")
+                    List<String> blockers = (List<String>) args.get("blockers");
+                    @SuppressWarnings("unchecked")
+                    List<String> decisions = (List<String>) args.get("decisions");
+                    @SuppressWarnings("unchecked")
+                    List<String> filesModified = (List<String>) args.get("files_modified");
+                    return toolHandler.handleCheckpointSession(sessionId, currentTask, completed, workingOn, blockers, decisions, filesModified);
+                }),
+
             buildTool("brain_end_session",
                 "End an agent session",
                 "object", Map.of(

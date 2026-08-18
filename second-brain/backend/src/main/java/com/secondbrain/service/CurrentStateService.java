@@ -83,20 +83,18 @@ public class CurrentStateService {
                 .untrackedFiles(untrackedFiles)
                 .deletedFiles(deletedFiles);
 
-        // 2. Last Active Agent & Session Lineage
+        // 2. Last Active Agent & Session Lineage (Bounded DB Index Query)
         List<AgentSession> recentSessions;
         if (repoId != null) {
-            recentSessions = sessionRepository.findByRepositoryId(repoId);
+            recentSessions = sessionRepository.findByRepositoryIdOrderByStartedAtDesc(repoId, PageRequest.of(0, 5));
         } else if (projId != null) {
-            recentSessions = sessionRepository.findByProjectId(projId);
+            recentSessions = sessionRepository.findByProjectIdOrderByStartedAtDesc(projId, PageRequest.of(0, 5));
         } else {
             recentSessions = sessionRepository.findTop10ByOrderByStartedAtDesc();
         }
 
         if (!recentSessions.isEmpty()) {
-            List<AgentSession> sortedSessions = new ArrayList<>(recentSessions);
-            sortedSessions.sort(Comparator.comparing((AgentSession s) -> s.getCreatedAt() != null ? s.getCreatedAt() : LocalDateTime.MIN).reversed());
-            AgentSession lastSession = sortedSessions.get(0);
+            AgentSession lastSession = recentSessions.get(0);
             builder.lastActiveAgent(lastSession.getAgent() != null ? lastSession.getAgent().getName() : "Unknown")
                     .lastActiveSessionId(lastSession.getId() != null ? lastSession.getId().toString() : "session-na")
                     .lastActiveTimestamp(lastSession.getCreatedAt() != null ? lastSession.getCreatedAt().format(DATE_FMT) : "Recent");
@@ -104,8 +102,8 @@ public class CurrentStateService {
             if (lastSession.getParentSessionId() != null) {
                 builder.inheritedFromSessionId(lastSession.getParentSessionId().toString())
                         .inheritedFromAgent(lastSession.getInheritedFromAgent());
-            } else if (sortedSessions.size() > 1) {
-                AgentSession prior = sortedSessions.get(1);
+            } else if (recentSessions.size() > 1) {
+                AgentSession prior = recentSessions.get(1);
                 if (prior.getAgent() != null && lastSession.getAgent() != null && !prior.getAgent().getId().equals(lastSession.getAgent().getId())) {
                     builder.inheritedFromSessionId(prior.getId() != null ? prior.getId().toString() : null)
                             .inheritedFromAgent(prior.getAgent().getName());
@@ -292,6 +290,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("CRITICAL")
                     .actionClass("ANALYZE")
+                    .executionPolicy("AUTO")
                     .action("Address active project blocker: " + currentBlockers.get(0))
                     .reason("Task is explicitly flagged as BLOCKED in the project backlog")
                     .confidence(0.98)
@@ -311,6 +310,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
                     .actionClass("MODIFY")
+                    .executionPolicy("AGENT_DECIDES")
                     .action("Investigate failure in '" + lastFail.getApproach() + "' and implement a validated alternative architecture")
                     .reason("Previous trial by " + lastFail.getAgentName() + " failed with error: " + lastFail.getFailureReason())
                     .confidence(0.94)
@@ -325,6 +325,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
                     .actionClass("MODIFY")
+                    .executionPolicy("AGENT_DECIDES")
                     .action("Continue active in-progress task: " + inProgressTasks.get(0))
                     .reason("Work was in progress during last session")
                     .confidence(0.92)
@@ -335,6 +336,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
                     .actionClass("MODIFY")
+                    .executionPolicy("AGENT_DECIDES")
                     .action("Resume active trial: " + activeTrials.get(0))
                     .reason("Trial was ongoing during last agent turn")
                     .confidence(0.90)
@@ -348,6 +350,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("MEDIUM")
                     .actionClass("INSPECT")
+                    .executionPolicy("AUTO")
                     .action("Inspect uncommitted modified files in working tree before editing")
                     .reason("Previous agent left dirty changes (" + String.join(", ", modifiedFiles) + ")")
                     .confidence(0.99)
@@ -362,6 +365,7 @@ public class CurrentStateService {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("LOW")
                     .actionClass("OBSERVE")
+                    .executionPolicy("AUTO")
                     .action("Call brain_start_session and proceed with task implementation")
                     .reason("Working tree is clean and no active blockers are recorded")
                     .confidence(1.00)

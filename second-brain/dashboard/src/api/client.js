@@ -41,9 +41,11 @@ export const brainApi = {
   
   // Sessions
   getRecentSessions: () => safeArray(api.get('/sessions/recent')),
+  endSession: (sessionId, summary) => api.post(`/sessions/${sessionId}/end?summary=${encodeURIComponent(summary || '')}`).then(r => r.data || {}),
   
   // Events
   getRecentEvents: () => safeArray(api.get('/events')),
+  getSessionEvents: (sessionId) => safeArray(api.get(`/bridge/session/${sessionId}/events`)),
   
   // Decisions
   getRecentDecisions: () => safeArray(api.get('/decisions/recent')),

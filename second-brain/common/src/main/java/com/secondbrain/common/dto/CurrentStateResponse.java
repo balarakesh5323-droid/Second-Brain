@@ -95,6 +95,7 @@ public class CurrentStateResponse {
     public static class NextActionRecommendation {
         private String priority; // CRITICAL, HIGH, MEDIUM, LOW
         private String actionClass; // OBSERVE, INSPECT, ANALYZE, MODIFY, DELETE, DEPLOY
+        private String executionPolicy; // AUTO, AGENT_DECIDES, HUMAN_APPROVAL
         private String action;
         private String reason;
         @Builder.Default
