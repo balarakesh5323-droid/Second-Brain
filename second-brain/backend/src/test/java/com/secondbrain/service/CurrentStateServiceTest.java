@@ -3,7 +3,6 @@ package com.secondbrain.service;
 import com.secondbrain.common.dto.CurrentStateResponse;
 import com.secondbrain.common.dto.SearchResult;
 import com.secondbrain.common.entity.*;
-import com.secondbrain.common.enums.MemoryStatus;
 import com.secondbrain.common.enums.TaskStatus;
 import com.secondbrain.common.repository.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,10 +68,11 @@ class CurrentStateServiceTest {
     }
 
     @Test
-    @DisplayName("Current State Briefing: Synthesizes git status, dirty files, tasks vs attempts, blockers, semantic knowledge, and next actions")
+    @DisplayName("Current State Briefing: Synthesizes session lineage, handoff banner, action safety classes, and semantic knowledge")
     void testGetCurrentStateBriefing() throws Exception {
         UUID repoId = UUID.randomUUID();
         UUID projId = UUID.randomUUID();
+        UUID parentSessionId = UUID.randomUUID();
 
         Project project = Project.builder().name("CorePlatform").build();
         project.setId(projId);
@@ -96,11 +96,14 @@ class CurrentStateServiceTest {
                 Map.of("id", "abc1234567890abcdef1234567890abcdef12345", "message", "feat: add token filter")
         ));
 
-        // 2. Mock Last Session
+        // 2. Mock Last Session with Lineage
         AgentSession session = AgentSession.builder()
-                .agent(Agent.builder().name("Claude Code").build())
+                .agent(Agent.builder().name("Codex").build())
                 .repository(repo)
                 .project(project)
+                .parentSessionId(parentSessionId)
+                .inheritedFromAgent("Claude Code")
+                .handoffReason("CROSS_AGENT_CONTINUITY")
                 .build();
         session.setId(UUID.randomUUID());
         session.setCreatedAt(LocalDateTime.now().minusHours(1));
@@ -148,6 +151,10 @@ class CurrentStateServiceTest {
         assertThat(state.getModifiedFiles()).contains("AuthService.java", "RedisTokenStore.java");
         assertThat(state.getUntrackedFiles()).contains("AuthIntegrationTest.java");
 
+        // Verify Lineage
+        assertThat(state.getInheritedFromAgent()).isEqualTo("Claude Code");
+        assertThat(state.getInheritedFromSessionId()).isEqualTo(parentSessionId.toString());
+
         // Verify Task vs Attempt Separation
         assertThat(state.getCompletedTasks()).contains("Implement JWT authentication");
         assertThat(state.getSuccessfulAttempts()).anyMatch(s -> s.contains("HMAC SHA-256"));
@@ -162,14 +169,16 @@ class CurrentStateServiceTest {
         // Verify Semantic Established Knowledge
         assertThat(state.getRelevantEstablishedKnowledge()).contains("Redis Sliding Window is used for distributed token blacklisting.");
 
-        // Verify Next Action Recommendations
+        // Verify Action Safety Classes & Warnings
         assertThat(state.getNextRecommendedActions()).isNotEmpty();
-        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("CRITICAL") && r.getAction().contains("Awaiting DevOps IAM role"));
-        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("HIGH") && r.getAction().contains("Investigate failure in 'Guava JVM Cache'") && r.getWarnings().stream().anyMatch(w -> w.contains("Redis atomic SETNX")));
-        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("MEDIUM") && r.getAction().contains("Inspect uncommitted modified files") && r.getReason().contains("AuthService.java"));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("CRITICAL") && r.getActionClass().equals("ANALYZE") && r.getAction().contains("Awaiting DevOps IAM role"));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("HIGH") && r.getActionClass().equals("MODIFY") && r.getAction().contains("Investigate failure in 'Guava JVM Cache'") && r.getWarnings().stream().anyMatch(w -> w.contains("Redis atomic SETNX")));
+        assertThat(state.getNextRecommendedActions()).anyMatch(r -> r.getPriority().equals("MEDIUM") && r.getActionClass().equals("INSPECT") && r.getAction().contains("Inspect uncommitted modified files") && r.getReason().contains("AuthService.java"));
 
-        // Verify Formatted Briefing
+        // Verify Formatted Briefing & Cross-Agent Handoff Banner
         String briefing = state.getFormattedBriefing();
+        assertThat(briefing).contains("🔄 CROSS-AGENT HANDOFF DETECTED");
+        assertThat(briefing).contains("**Inherited From Agent:** `Claude Code`");
         assertThat(briefing).contains("## 🌿 Working Tree & Git Status");
         assertThat(briefing).contains("AuthService.java");
         assertThat(briefing).contains("## ✅ Completed Tasks & Successful Trials");
@@ -179,6 +188,9 @@ class CurrentStateServiceTest {
         assertThat(briefing).contains("## ⚠️ Current Blockers");
         assertThat(briefing).contains("Awaiting DevOps IAM role");
         assertThat(briefing).contains("## 🎯 Recommended Next Actions");
+        assertThat(briefing).contains("[CRITICAL | ANALYZE]");
+        assertThat(briefing).contains("[HIGH | MODIFY]");
+        assertThat(briefing).contains("[MEDIUM | INSPECT]");
         assertThat(briefing).contains("Redis Sliding Window is used for distributed token blacklisting.");
     }
 }

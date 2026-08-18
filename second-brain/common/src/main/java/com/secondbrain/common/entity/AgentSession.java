@@ -48,4 +48,13 @@ public class AgentSession extends BaseEntity {
     @Column(name = "event_sequence", nullable = false)
     @Builder.Default
     private Long eventSequence = 0L;
+
+    @Column(name = "parent_session_id")
+    private java.util.UUID parentSessionId;
+
+    @Column(name = "inherited_from_agent")
+    private String inheritedFromAgent;
+
+    @Column(name = "handoff_reason")
+    private String handoffReason;
 }

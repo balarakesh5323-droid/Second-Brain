@@ -695,6 +695,28 @@ public class AgentBridgeService {
         RepositoryEntity repo = resolveRepository(payload.getRepositoryIdOrPath(), payload.getRepositoryIdOrPath());
         Project project = repo != null ? repo.getProject() : resolveProject(payload.getProjectId());
 
+        // Detect parent session for cross-agent lineage & automatic handoff
+        UUID parentSessionId = null;
+        String inheritedFromAgent = null;
+        String handoffReason = null;
+
+        List<AgentSession> previousSessions = (repo != null)
+                ? sessionRepository.findByRepositoryId(repo.getId())
+                : (project != null ? sessionRepository.findByProjectId(project.getId()) : List.of());
+
+        if (!previousSessions.isEmpty()) {
+            List<AgentSession> sorted = new ArrayList<>(previousSessions);
+            sorted.sort(Comparator.comparing((AgentSession s) -> s.getCreatedAt() != null ? s.getCreatedAt() : LocalDateTime.MIN).reversed());
+            AgentSession previous = sorted.get(0);
+            if (previous.getAgent() != null && !previous.getAgent().getId().equals(agent.getId())) {
+                parentSessionId = previous.getId();
+                inheritedFromAgent = previous.getAgent().getName();
+                handoffReason = "CROSS_AGENT_CONTINUITY";
+                log.info("🔄 Cross-Agent Lineage Established: Agent '{}' inherits from previous Agent '{}' (Session: {})",
+                        agentName, inheritedFromAgent, parentSessionId);
+            }
+        }
+
         LocalDateTime startedAt = LocalDateTime.now();
         AgentSession session = AgentSession.builder()
                 .agent(agent)
@@ -703,6 +725,9 @@ public class AgentBridgeService {
                 .task(payload.getTask() != null ? payload.getTask() : "Autonomous Session")
                 .status(com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name())
                 .startedAt(startedAt)
+                .parentSessionId(parentSessionId)
+                .inheritedFromAgent(inheritedFromAgent)
+                .handoffReason(handoffReason)
                 .endedAt(null)
                 .eventSequence(1L)
                 .build();
@@ -724,6 +749,10 @@ public class AgentBridgeService {
         sessionProps.put("status", com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name());
         sessionProps.put("startedAt", startedAt.toString());
         sessionProps.put("branch", payload.getBranch() != null ? payload.getBranch() : "main");
+        if (parentSessionId != null) {
+            sessionProps.put("parentSessionId", parentSessionId.toString());
+            sessionProps.put("inheritedFromAgent", inheritedFromAgent);
+        }
 
         // 2. Enqueue Outbox projection for Neo4j
         Map<String, Object> graphPayload = new HashMap<>();
@@ -745,6 +774,10 @@ public class AgentBridgeService {
         res.put("sessionId", sessionId);
         res.put("sessionStatus", com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name());
         res.put("startedAt", startedAt);
+        if (parentSessionId != null) {
+            res.put("inheritedFromSessionId", parentSessionId.toString());
+            res.put("inheritedFromAgent", inheritedFromAgent);
+        }
         return res;
     }
 

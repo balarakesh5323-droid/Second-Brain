@@ -36,6 +36,7 @@ public class CurrentStateResponse {
     private String lastActiveSessionId;
     private String lastActiveTimestamp;
     private String inheritedFromSessionId;
+    private String inheritedFromAgent;
 
     // Distinct Task vs Attempt Lifecycle
     @Builder.Default
@@ -93,8 +94,13 @@ public class CurrentStateResponse {
     @AllArgsConstructor
     public static class NextActionRecommendation {
         private String priority; // CRITICAL, HIGH, MEDIUM, LOW
+        private String actionClass; // OBSERVE, INSPECT, ANALYZE, MODIFY, DELETE, DEPLOY
         private String action;
         private String reason;
+        @Builder.Default
+        private Double confidence = 0.95;
+        @Builder.Default
+        private Boolean requiresHumanApproval = false;
         @Builder.Default
         private List<String> warnings = new ArrayList<>();
         @Builder.Default

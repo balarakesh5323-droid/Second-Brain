@@ -83,7 +83,7 @@ public class CurrentStateService {
                 .untrackedFiles(untrackedFiles)
                 .deletedFiles(deletedFiles);
 
-        // 2. Last Active Agent & Session
+        // 2. Last Active Agent & Session Lineage
         List<AgentSession> recentSessions;
         if (repoId != null) {
             recentSessions = sessionRepository.findByRepositoryId(repoId);
@@ -100,6 +100,17 @@ public class CurrentStateService {
             builder.lastActiveAgent(lastSession.getAgent() != null ? lastSession.getAgent().getName() : "Unknown")
                     .lastActiveSessionId(lastSession.getId() != null ? lastSession.getId().toString() : "session-na")
                     .lastActiveTimestamp(lastSession.getCreatedAt() != null ? lastSession.getCreatedAt().format(DATE_FMT) : "Recent");
+
+            if (lastSession.getParentSessionId() != null) {
+                builder.inheritedFromSessionId(lastSession.getParentSessionId().toString())
+                        .inheritedFromAgent(lastSession.getInheritedFromAgent());
+            } else if (sortedSessions.size() > 1) {
+                AgentSession prior = sortedSessions.get(1);
+                if (prior.getAgent() != null && lastSession.getAgent() != null && !prior.getAgent().getId().equals(lastSession.getAgent().getId())) {
+                    builder.inheritedFromSessionId(prior.getId() != null ? prior.getId().toString() : null)
+                            .inheritedFromAgent(prior.getAgent().getName());
+                }
+            }
         }
 
         // 3. Distinct Task vs Attempt Lifecycle
@@ -177,7 +188,7 @@ public class CurrentStateService {
         );
         builder.relevantEstablishedKnowledge(establishedKnowledge);
 
-        // 6. Synthesize Structured Next Action Recommendations
+        // 6. Synthesize Structured Next Action Recommendations with Safety Classification
         List<CurrentStateResponse.NextActionRecommendation> nextActions = synthesizeNextRecommendations(
                 modifiedFiles,
                 currentBlockers,
@@ -265,7 +276,7 @@ public class CurrentStateService {
     }
 
     /**
-     * Synthesizes actionable, prioritized next steps for incoming agents.
+     * Synthesizes actionable, prioritized, and safety-classified next steps for incoming agents.
      */
     private List<CurrentStateResponse.NextActionRecommendation> synthesizeNextRecommendations(
             List<String> modifiedFiles,
@@ -280,8 +291,11 @@ public class CurrentStateService {
         if (!currentBlockers.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("CRITICAL")
+                    .actionClass("ANALYZE")
                     .action("Address active project blocker: " + currentBlockers.get(0))
                     .reason("Task is explicitly flagged as BLOCKED in the project backlog")
+                    .confidence(0.98)
+                    .requiresHumanApproval(false)
                     .evidence(List.of("BacklogTaskBlocked"))
                     .build());
         }
@@ -296,8 +310,11 @@ public class CurrentStateService {
 
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
+                    .actionClass("MODIFY")
                     .action("Investigate failure in '" + lastFail.getApproach() + "' and implement a validated alternative architecture")
                     .reason("Previous trial by " + lastFail.getAgentName() + " failed with error: " + lastFail.getFailureReason())
+                    .confidence(0.94)
+                    .requiresHumanApproval(false)
                     .warnings(failWarnings)
                     .evidence(List.of("AgentAttemptFailure:" + lastFail.getAgentName()))
                     .build());
@@ -307,15 +324,21 @@ public class CurrentStateService {
         if (!inProgressTasks.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
+                    .actionClass("MODIFY")
                     .action("Continue active in-progress task: " + inProgressTasks.get(0))
                     .reason("Work was in progress during last session")
+                    .confidence(0.92)
+                    .requiresHumanApproval(false)
                     .evidence(List.of("TaskInProgress"))
                     .build());
         } else if (!activeTrials.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("HIGH")
+                    .actionClass("MODIFY")
                     .action("Resume active trial: " + activeTrials.get(0))
                     .reason("Trial was ongoing during last agent turn")
+                    .confidence(0.90)
+                    .requiresHumanApproval(false)
                     .evidence(List.of("ActiveTrial"))
                     .build());
         }
@@ -324,8 +347,11 @@ public class CurrentStateService {
         if (!modifiedFiles.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("MEDIUM")
+                    .actionClass("INSPECT")
                     .action("Inspect uncommitted modified files in working tree before editing")
                     .reason("Previous agent left dirty changes (" + String.join(", ", modifiedFiles) + ")")
+                    .confidence(0.99)
+                    .requiresHumanApproval(false)
                     .warnings(List.of("Verify prior agent work before overwriting"))
                     .evidence(modifiedFiles)
                     .build());
@@ -335,8 +361,11 @@ public class CurrentStateService {
         if (recommendations.isEmpty()) {
             recommendations.add(CurrentStateResponse.NextActionRecommendation.builder()
                     .priority("LOW")
+                    .actionClass("OBSERVE")
                     .action("Call brain_start_session and proceed with task implementation")
                     .reason("Working tree is clean and no active blockers are recorded")
+                    .confidence(1.00)
+                    .requiresHumanApproval(false)
                     .evidence(List.of("CleanState"))
                     .build());
         }
@@ -354,6 +383,23 @@ public class CurrentStateService {
             sb.append("**Target Task:** *").append(targetTask).append("*\n");
         }
         sb.append("\n---\n\n");
+
+        // Cross-Agent Handoff Detection Banner
+        if (state.getInheritedFromAgent() != null || state.getInheritedFromSessionId() != null) {
+            sb.append("> [!IMPORTANT]\n");
+            sb.append("> **🔄 CROSS-AGENT HANDOFF DETECTED**\n");
+            if (state.getInheritedFromAgent() != null) {
+                sb.append("> - **Inherited From Agent:** `").append(state.getInheritedFromAgent()).append("`\n");
+            }
+            if (state.getInheritedFromSessionId() != null) {
+                sb.append("> - **Parent Session ID:** `").append(state.getInheritedFromSessionId()).append("`\n");
+            }
+            if (state.getLastActiveTimestamp() != null) {
+                sb.append("> - **Previous Activity Time:** ").append(state.getLastActiveTimestamp()).append("\n");
+            }
+            sb.append(">\n");
+            sb.append("> You are seamlessly continuing prior work from ").append(state.getInheritedFromAgent() != null ? state.getInheritedFromAgent() : "a previous agent").append(". Review uncommitted files and past trial lessons below.\n\n");
+        }
 
         // Working tree & Git State
         sb.append("## 🌿 Working Tree & Git Status\n");
@@ -453,8 +499,8 @@ public class CurrentStateService {
         if (!state.getNextRecommendedActions().isEmpty()) {
             sb.append("## 🎯 Recommended Next Actions\n");
             for (var rec : state.getNextRecommendedActions()) {
-                sb.append("- **[").append(rec.getPriority()).append("]** ").append(rec.getAction())
-                        .append(" *(Reason: ").append(rec.getReason()).append(")*\n");
+                sb.append("- **[").append(rec.getPriority()).append(" | ").append(rec.getActionClass()).append("]** ").append(rec.getAction())
+                        .append("\n  - *Reason:* ").append(rec.getReason()).append("\n");
                 if (!rec.getWarnings().isEmpty()) {
                     for (String w : rec.getWarnings()) {
                         sb.append("  - ⚠️ ").append(w).append("\n");
