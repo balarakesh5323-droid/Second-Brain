@@ -64,6 +64,7 @@ class SecondBrainMcpContractTest {
                 "brain_record_event",
                 "brain_start_session",
                 "brain_end_session",
+                "brain_complete_session",
                 "brain_get_handoff",
                 "brain_create_handoff",
                 "brain_record_decision",

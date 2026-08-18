@@ -141,10 +141,15 @@ public class BrainToolHandler {
     }
 
     public CallToolResult handleEndSession(String sessionId, String summary) {
+        return handleCompleteSession(sessionId, "COMPLETED", summary, null);
+    }
+
+    public CallToolResult handleCompleteSession(String sessionId, String status, String summary, Map<String, Object> handoff) {
         try {
             var payload = AgentBridgeService.CompleteSessionPayload.builder()
-                .status("COMPLETED")
+                .status(status != null && !status.isBlank() ? status : "COMPLETED")
                 .summary(summary)
+                .handoff(handoff)
                 .build();
             var res = agentBridgeService.completeSession(UUID.fromString(sessionId), payload);
             return new CallToolResult(List.of(new TextContent(

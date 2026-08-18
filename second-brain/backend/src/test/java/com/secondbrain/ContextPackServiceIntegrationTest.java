@@ -139,12 +139,18 @@ public class ContextPackServiceIntegrationTest {
         List<Map<String, Object>> decisions = (List<Map<String, Object>>) pack.get("relevantDecisions");
         assertThat(decisions).isNotEmpty();
         assertThat(decisions.get(0).get("title")).isEqualTo("Redis Sliding Window Blacklist");
+        assertThat(decisions.get(0).get("relevance")).isNotNull();
+        assertThat((Double) decisions.get(0).get("relevance")).isGreaterThan(0.70);
+        assertThat((String) decisions.get(0).get("reason")).containsIgnoringCase("redis");
 
         // Verify Failures
         List<Map<String, Object>> failures = (List<Map<String, Object>>) pack.get("relevantFailures");
         assertThat(failures).isNotEmpty();
         assertThat(failures.get(0).get("approach")).isEqualTo("In-memory blacklist");
         assertThat(failures.get(0).get("lessonLearned")).isEqualTo("Distributed store with Redis TTL required");
+        assertThat(failures.get(0).get("relevance")).isNotNull();
+        assertThat((Double) failures.get(0).get("relevance")).isGreaterThan(0.75);
+        assertThat((String) failures.get(0).get("reason")).containsIgnoringCase("blacklist");
 
         // Verify Automated Warnings
         List<String> warnings = (List<String>) pack.get("warnings");

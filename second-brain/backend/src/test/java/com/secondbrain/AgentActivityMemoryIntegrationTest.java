@@ -39,6 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
+@org.springframework.test.annotation.DirtiesContext
 public class AgentActivityMemoryIntegrationTest {
 
     @Autowired

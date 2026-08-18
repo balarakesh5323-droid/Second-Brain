@@ -144,6 +144,23 @@ public class SecondBrainMcpServer {
                     return toolHandler.handleEndSession(sessionId, summary);
                 }),
 
+            buildTool("brain_complete_session",
+                "Conclude an active agent session with final status, summary, and cross-agent handoff payload.",
+                "object", Map.of(
+                    "session_id", Map.of("type", "string", "description", "Session UUID"),
+                    "status", Map.of("type", "string", "description", "Session outcome: COMPLETED or FAILED"),
+                    "summary", Map.of("type", "string", "description", "Concise session summary"),
+                    "handoff", Map.of("type", "object", "description", "Optional handoff payload for next agent (targetAgent, task, completedItems, inProgressItems, nextSteps)")
+                ), List.of("session_id"),
+                (exchange, args) -> {
+                    String sessionId = (String) args.get("session_id");
+                    String status = (String) args.get("status");
+                    String summary = (String) args.get("summary");
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> handoff = (Map<String, Object>) args.get("handoff");
+                    return toolHandler.handleCompleteSession(sessionId, status, summary, handoff);
+                }),
+
             buildTool("brain_get_handoff",
                 "Get the latest handoff for a repository",
                 "object", Map.of(

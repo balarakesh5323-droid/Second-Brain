@@ -54,18 +54,22 @@ When you (Claude Code, OpenAI Codex, Qwen, Cursor, or Antigravity) interact with
 Do **not** query every brain database for trivial tasks. Calibrate your context retrieval using this 6-tier escalation policy:
 
 ```text
-┌─────────┬───────────────────────────────┬────────────────────────────────────────┬──────────────┐
-│ Level   │ Scenario                      │ Recommended MCP Calls                  │ Query Budget │
-├─────────┼───────────────────────────────┼────────────────────────────────────────┼──────────────┤
-│ Level 0 │ Local / isolated single-file  │ (No retrieval needed)                  │ 0 calls      │
-│         │ edit with obvious context     │                                        │              │
-│ Level 1 │ Task start / continuity pickup│ brain_context_pack (or workspace_state)│ 1 call       │
-│ Level 2 │ Prior decisions & failures    │ brain_get_attempts / query_agent_memory│ 1-2 calls    │
-│ Level 3 │ Navigating unfamiliar symbols │ brain_search(collection="code_symbols")│ 1-2 calls    │
-│ Level 4 │ Deep refactoring / call paths │ brain_knowledge_graph                  │ 1-2 calls    │
-│ Level 5 │ Breaking schema / API change  │ brain_impact_analysis                  │ 1 call       │
-└─────────┴───────────────────────────────┴────────────────────────────────────────┴──────────────┘
+┌─────────┬───────────────────────────────┬────────────────────────────────────────────────────────┬──────────────┐
+│ Level   │ Scenario                      │ Recommended MCP Calls                                  │ Query Budget │
+├─────────┼───────────────────────────────┼────────────────────────────────────────────────────────┼──────────────┤
+│ Level 0 │ Local / isolated single-file  │ (No retrieval needed)                                  │ 0 calls      │
+│         │ edit with obvious context     │                                                        │              │
+│ Level 1 │ Task start / continuity pickup│ brain_context_pack (or workspace_state)                │ 1 call       │
+│ Level 2 │ Prior decisions & failures    │ brain_get_attempts / brain_search(scope="agent_memory")│ 1-2 calls    │
+│ Level 3 │ Navigating unfamiliar symbols │ brain_search(collection="code_symbols")                │ 1-2 calls    │
+│ Level 4 │ Deep refactoring / call paths │ brain_knowledge_graph                                  │ 1-2 calls    │
+│ Level 5 │ Breaking schema / API change  │ brain_impact_analysis                                  │ 1 call       │
+└─────────┴───────────────────────────────┴────────────────────────────────────────────────────────┴──────────────┘
 ```
+
+### Operation Categories: Lifecycle vs Retrieval
+- **Lifecycle Operations** (`brain_start_session`, `brain_record_event`, `brain_complete_session`): Manage session state, sequence tracking, and cross-agent handoffs in the durable ACID log.
+- **Retrieval Operations** (`brain_context_pack`, `brain_search`, `brain_knowledge_graph`): Retrieve multi-modal intelligence across PostgreSQL, Neo4j, Qdrant, and Git.
 
 ### Query Budget Guidelines:
 - **Simple Tasks** (typo fix, small unit test, single function refactor): Max **1–2** brain calls. Default to `brain_context_pack`.
@@ -80,7 +84,7 @@ For any multi-step engineering task, follow this standard loop:
 
 ```mermaid
 flowchart TD
-    P1["Phase 1: Inception & Context Pack\n(brain_start_session + brain_context_pack)"] --> P2["Phase 2: Failure Avoidance & Prior Decisions\n(Inspect context pack warnings & past attempts)"]
+    P1["Phase 1: Inception & Context Pack\n(Lifecycle: brain_start_session + Retrieval: brain_context_pack)"] --> P2["Phase 2: Failure Avoidance & Prior Decisions\n(Inspect context pack warnings, relevance scores & past attempts)"]
     P2 --> P3["Phase 3: AST Navigation & Graph Traversal\n(brain_knowledge_graph + brain_search code_symbols)"]
     P3 --> P4["Phase 4: Active Execution & Incremental Event Sourcing\n(brain_record_event: DECISION_MADE / FAILED_ATTEMPT / GIT_COMMIT)"]
     P4 --> P5["Phase 5: Session Wrap-Up & Cross-Agent Handoff\n(brain_complete_session + rich handoff notes)"]
@@ -92,7 +96,7 @@ flowchart TD
 
 *Note: Start a session only when performing real repository/project engineering tasks or continuing an agent handoff — not for one-off general questions.*
 
-1. **Start Incremental Session**:
+1. **Start Incremental Session (Lifecycle Operation)**:
    ```json
    {
      "tool": "brain_start_session",
@@ -105,8 +109,8 @@ flowchart TD
    ```
    *Yields*: `sessionId` and `sessionStatus = "IN_PROGRESS"`. Keep `sessionId` in your working memory.
 
-2. **Retrieve 1-Shot Multi-Modal Context Pack**:
-   Get repository metadata, git status, active sessions, latest handoff, past failures, relevant decisions, open tasks, and intelligent automated warnings in **1 single call**:
+2. **Retrieve 1-Shot Multi-Modal Context Pack (Retrieval Operation)**:
+   Get repository metadata, git status, active sessions, latest handoff, past failures with explainable reasons, relevant decisions, open tasks, and intelligent automated warnings in **1 single call**:
    ```json
    {
      "tool": "brain_context_pack",
@@ -116,6 +120,7 @@ flowchart TD
      }
    }
    ```
+   *Every decision, failure, and symbol returned includes `relevance` (0.00..1.00) and an explainable `reason` (e.g., `"Matches task technologies 'Redis' and 'token' in repository"`).*
 
 ---
 

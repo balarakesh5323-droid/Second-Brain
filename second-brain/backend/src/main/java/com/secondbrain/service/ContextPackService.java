@@ -100,15 +100,36 @@ public class ContextPackService {
         }
         pack.put("latestHandoff", latestHandoffMap);
 
-        // 4. Relevant Decisions
+        Set<String> taskKeywords = extractKeywords(task);
+
+        // 4. Relevant Decisions (Task-aware relevance ranked)
         List<Map<String, Object>> relevantDecisions = new ArrayList<>();
-        if (repo != null) {
-            var decisions = decisionRepository.findByRepositoryId(repo.getId());
-            for (var d : decisions) {
+        if (repo != null || project != null) {
+            List<Decision> allDecisions = repo != null 
+                    ? decisionRepository.findByRepositoryId(repo.getId())
+                    : (project != null ? decisionRepository.findByProjectId(project.getId()) : List.of());
+
+            List<ScoredItem<Decision>> scoredDecisions = new ArrayList<>();
+            for (var d : allDecisions) {
+                String fullText = (d.getTitle() != null ? d.getTitle() : "") + " " + (d.getRationale() != null ? d.getRationale() : "");
+                double score = computeRelevanceScore(fullText, taskKeywords, 0.70);
+                List<String> matched = findMatchedKeywords(fullText, taskKeywords);
+                String reason = matched.isEmpty()
+                        ? "Recent architectural decision in repository"
+                        : "Matches task keywords [" + String.join(", ", matched) + "] in repository";
+                scoredDecisions.add(new ScoredItem<>(d, score, reason, matched));
+            }
+
+            scoredDecisions.sort((a, b) -> Double.compare(b.score, a.score));
+
+            for (var item : scoredDecisions) {
+                Decision d = item.item;
                 Map<String, Object> dMap = new LinkedHashMap<>();
                 dMap.put("title", d.getTitle());
                 dMap.put("rationale", d.getRationale());
                 dMap.put("status", d.getStatus());
+                dMap.put("relevance", Math.round(item.score * 100.0) / 100.0);
+                dMap.put("reason", item.reason);
                 dMap.put("createdAt", d.getCreatedAt());
                 relevantDecisions.add(dMap);
                 if (relevantDecisions.size() >= 5) break;
@@ -116,25 +137,48 @@ public class ContextPackService {
         }
         pack.put("relevantDecisions", relevantDecisions);
 
-        // 5. Relevant Failed & Successful Attempts (Failure Avoidance)
+        // 5. Relevant Failed & Successful Attempts (Failure Avoidance & Task-aware relevance ranked)
         List<Map<String, Object>> relevantFailures = new ArrayList<>();
-        if (repo != null) {
-            var attempts = attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId());
-            for (var a : attempts) {
+        if (repo != null || project != null) {
+            List<AgentAttempt> allAttempts = repo != null
+                    ? attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId())
+                    : (project != null ? attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId()) : List.of());
+
+            List<ScoredItem<AgentAttempt>> scoredFailures = new ArrayList<>();
+            for (var a : allAttempts) {
                 if ("FAILED".equalsIgnoreCase(a.getStatus()) || "FAILURE".equalsIgnoreCase(a.getStatus())) {
-                    Map<String, Object> aMap = new LinkedHashMap<>();
-                    aMap.put("approach", a.getApproach());
-                    aMap.put("errorMessage", a.getErrorMessage());
-                    aMap.put("lessonLearned", a.getLessonLearned());
-                    aMap.put("agentName", a.getAgentName());
-                    aMap.put("createdAt", a.getCreatedAt());
-                    relevantFailures.add(aMap);
+                    String fullText = (a.getApproach() != null ? a.getApproach() : "") + " "
+                            + (a.getErrorMessage() != null ? a.getErrorMessage() : "") + " "
+                            + (a.getLessonLearned() != null ? a.getLessonLearned() : "") + " "
+                            + (a.getTaskDescription() != null ? a.getTaskDescription() : "");
+                    double score = computeRelevanceScore(fullText, taskKeywords, 0.75);
+                    List<String> matched = findMatchedKeywords(fullText, taskKeywords);
+                    String reason = matched.isEmpty()
+                            ? "Prior failed trial in repository"
+                            : "Prior failure matching task technologies [" + String.join(", ", matched) + "]";
+                    scoredFailures.add(new ScoredItem<>(a, score, reason, matched));
                 }
+            }
+
+            scoredFailures.sort((a, b) -> Double.compare(b.score, a.score));
+
+            for (var item : scoredFailures) {
+                AgentAttempt a = item.item;
+                Map<String, Object> aMap = new LinkedHashMap<>();
+                aMap.put("approach", a.getApproach());
+                aMap.put("errorMessage", a.getErrorMessage());
+                aMap.put("lessonLearned", a.getLessonLearned());
+                aMap.put("agentName", a.getAgentName());
+                aMap.put("relevance", Math.round(item.score * 100.0) / 100.0);
+                aMap.put("reason", item.reason);
+                aMap.put("createdAt", a.getCreatedAt());
+                relevantFailures.add(aMap);
+                if (relevantFailures.size() >= 5) break;
             }
         }
         pack.put("relevantFailures", relevantFailures);
 
-        // 6. Relevant Code Symbols (Vector search on task)
+        // 6. Relevant Code Symbols (Vector search on task with semantic score & reason)
         List<Map<String, Object>> relevantSymbols = new ArrayList<>();
         if (task != null && !task.isBlank()) {
             try {
@@ -142,7 +186,8 @@ public class ContextPackService {
                 List<SearchResult> symbolResults = semanticSearchService.searchScoped(task, "symbol_knowledge", null, repoScope, 5);
                 for (SearchResult sr : symbolResults) {
                     Map<String, Object> sym = new LinkedHashMap<>();
-                    sym.put("score", sr.getScore());
+                    sym.put("relevance", Math.round(sr.getScore() * 100.0) / 100.0);
+                    sym.put("reason", "Semantic vector match for task in repository symbols");
                     if (sr.getPayload() != null) {
                         sym.put("name", sr.getPayload().get("name"));
                         sym.put("file", sr.getPayload().get("file"));
@@ -238,4 +283,47 @@ public class ContextPackService {
         }
         return projectRepository.findAll().stream().findFirst().orElse(null);
     }
+
+    private Set<String> extractKeywords(String text) {
+        if (text == null || text.isBlank()) return Set.of();
+        Set<String> stopWords = Set.of(
+                "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or", "is", "are", "with", "by", "from", "as"
+        );
+        Set<String> keywords = new HashSet<>();
+        String[] tokens = text.toLowerCase().split("[^a-zA-Z0-9_-]+");
+        for (String t : tokens) {
+            if (t.length() > 2 && !stopWords.contains(t)) {
+                keywords.add(t);
+            }
+        }
+        return keywords;
+    }
+
+    private double computeRelevanceScore(String text, Set<String> taskKeywords, double baseScore) {
+        if (text == null || taskKeywords.isEmpty()) return baseScore;
+        String lower = text.toLowerCase();
+        int matches = 0;
+        for (String kw : taskKeywords) {
+            if (lower.contains(kw)) {
+                matches++;
+            }
+        }
+        if (matches == 0) return baseScore;
+        double boost = Math.min(0.25, matches * 0.08);
+        return Math.min(0.98, baseScore + boost);
+    }
+
+    private List<String> findMatchedKeywords(String text, Set<String> taskKeywords) {
+        if (text == null || taskKeywords.isEmpty()) return List.of();
+        String lower = text.toLowerCase();
+        List<String> matched = new ArrayList<>();
+        for (String kw : taskKeywords) {
+            if (lower.contains(kw)) {
+                matched.add(kw);
+            }
+        }
+        return matched;
+    }
+
+    private record ScoredItem<T>(T item, double score, String reason, List<String> matchedKeywords) {}
 }
