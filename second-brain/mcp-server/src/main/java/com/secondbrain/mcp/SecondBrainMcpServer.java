@@ -507,7 +507,23 @@ public class SecondBrainMcpServer {
             buildTool("brain_consolidate_memories",
                 "Trigger autonomous memory consolidation — discovers recurring architectural decisions, failure anti-patterns, developer preferences, resolves contradictions, and compounds confidence.",
                 "object", Map.of(), List.of(),
-                (exchange, args) -> toolHandler.handleConsolidateMemories())
+                (exchange, args) -> toolHandler.handleConsolidateMemories()),
+
+            buildTool("brain_get_work_history",
+                "Retrieve comprehensive chronological cross-agent work history, past trials, failures, architectural decisions, and active memories for a repository or task across Claude Code, Codex, Cursor, Qwen, and other AI agents.",
+                "object", Map.of(
+                    "repository", Map.of("type", "string", "description", "Repository name"),
+                    "project", Map.of("type", "string", "description", "Optional project ID or name"),
+                    "task", Map.of("type", "string", "description", "Optional task description filter"),
+                    "limit", Map.of("type", "integer", "description", "Max work items to retrieve (default 25)")
+                ), List.of(),
+                (exchange, args) -> {
+                    String repository = (String) args.get("repository");
+                    String project = (String) args.get("project");
+                    String task = (String) args.get("task");
+                    Integer limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : null;
+                    return toolHandler.handleGetWorkHistory(repository, project, task, limit);
+                })
         );
     }
 

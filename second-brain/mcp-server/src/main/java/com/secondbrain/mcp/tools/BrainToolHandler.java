@@ -48,6 +48,7 @@ public class BrainToolHandler {
     private final com.secondbrain.service.DiagramIngestionService diagramIngestionService;
     private final com.secondbrain.service.ContextPackService contextPackService;
     private final com.secondbrain.service.MemoryConsolidationService memoryConsolidationService;
+    private final com.secondbrain.service.WorkHistoryService workHistoryService;
     private final ObjectMapper objectMapper;
 
     public CallToolResult handleSearch(String query, String collection, int limit) {
@@ -916,6 +917,16 @@ public class BrainToolHandler {
         } catch (Exception e) {
             log.error("Failed running memory consolidation cycle", e);
             return new CallToolResult(List.of(new TextContent("Error running memory consolidation: " + e.getMessage())), true);
+        }
+    }
+
+    public CallToolResult handleGetWorkHistory(String repository, String project, String task, Integer limit) {
+        try {
+            var response = workHistoryService.getWorkHistory(repository, project, task, limit);
+            return new CallToolResult(List.of(new TextContent(response.getFormattedNarrative())), false);
+        } catch (Exception e) {
+            log.error("Failed fetching work history", e);
+            return new CallToolResult(List.of(new TextContent("Error fetching work history: " + e.getMessage())), true);
         }
     }
 

@@ -2,13 +2,13 @@ package com.secondbrain.service;
 
 import com.secondbrain.common.dto.AgentProvenance;
 import com.secondbrain.common.enums.MemoryStatus;
+import com.secondbrain.common.enums.MemoryType;
 import lombok.Builder;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Algorithmic Confidence & Status Gating Engine.
@@ -31,14 +31,23 @@ public class EvidenceConfidenceEngine {
         private String explanation;
     }
 
-    /**
-     * Calibrates empirical confidence based on evidence independence and enforces lifecycle status gates.
-     */
     public ConfidenceAssessment evaluate(
             int rawEvidenceCount,
             List<AgentProvenance> provenances,
             Set<String> evidenceSources,
             boolean isDeveloperExplicit) {
+        return evaluate(rawEvidenceCount, provenances, evidenceSources, isDeveloperExplicit, MemoryType.ARCHITECTURAL);
+    }
+
+    /**
+     * Calibrates empirical confidence based on evidence independence and memory type policies.
+     */
+    public ConfidenceAssessment evaluate(
+            int rawEvidenceCount,
+            List<AgentProvenance> provenances,
+            Set<String> evidenceSources,
+            boolean isDeveloperExplicit,
+            MemoryType memoryType) {
 
         if (rawEvidenceCount <= 0 || (evidenceSources != null && evidenceSources.isEmpty())) {
             return ConfidenceAssessment.builder()
@@ -63,7 +72,13 @@ public class EvidenceConfidenceEngine {
                 if (p.getRepositoryName() != null && !p.getRepositoryName().isBlank()) {
                     distinctRepos.add(p.getRepositoryName());
                 }
-                String sessionKey = p.getSessionId() != null ? p.getSessionId() : "default-session";
+                // Robust session key: missing session ID uses distinct provenance identity rather than single default bucket
+                String sessionKey = (p.getSessionId() != null && !p.getSessionId().isBlank())
+                        ? p.getSessionId()
+                        : "agent:" + (p.getAgentName() != null ? p.getAgentName() : "UNKNOWN")
+                        + ":repo:" + (p.getRepositoryName() != null ? p.getRepositoryName() : "UNKNOWN")
+                        + ":time:" + (p.getTimestamp() != null ? p.getTimestamp().toString() : "gen-" + UUID.randomUUID().toString());
+
                 eventsPerSession.put(sessionKey, eventsPerSession.getOrDefault(sessionKey, 0) + 1);
             }
         }
@@ -89,7 +104,12 @@ public class EvidenceConfidenceEngine {
             effectiveEvidence += (distinctRepos.size() - 1) * 0.50; // Boost for cross-repo generality
         }
         if (isDeveloperExplicit) {
-            effectiveEvidence += 1.50; // User explicit preference carries high authority
+            // User explicit input carries high weight for developer preferences, but tempered for architectural claims
+            if (memoryType == MemoryType.PREFERENCE || memoryType == MemoryType.DECLARATIVE) {
+                effectiveEvidence += 2.00;
+            } else {
+                effectiveEvidence += 0.80;
+            }
         }
 
         // 3. Calibrate Empirical Confidence & Status Gating
@@ -107,15 +127,19 @@ public class EvidenceConfidenceEngine {
         } else {
             // 3+ independent evidence units (multi-agent or cross-repo): ESTABLISHED
             calibratedConfidence = Math.min(0.96, 0.82 + ((effectiveEvidence - 3.0) * 0.04));
-            status = (distinctAgents.size() >= 2 || distinctRepos.size() >= 2 || isDeveloperExplicit)
-                    ? MemoryStatus.ESTABLISHED : MemoryStatus.CONFIRMED;
+            if (memoryType == MemoryType.PREFERENCE && isDeveloperExplicit) {
+                status = MemoryStatus.ESTABLISHED;
+            } else {
+                status = (distinctAgents.size() >= 2 || distinctRepos.size() >= 2)
+                        ? MemoryStatus.ESTABLISHED : MemoryStatus.CONFIRMED;
+            }
         }
 
         String provenanceSource = isDeveloperExplicit ? "DEVELOPER_EXPLICIT"
                 : (distinctAgents.size() >= 2 ? "MULTI_AGENT_CONSENSUS" : "AGENT_EXPERIENCE");
 
-        String explanation = String.format("Raw count: %d, Effective independent evidence: %.2f, Distinct agents: %d, Distinct repos: %d, Gated status: %s",
-                rawEvidenceCount, effectiveEvidence, distinctAgents.size(), distinctRepos.size(), status);
+        String explanation = String.format("Raw count: %d, Effective independent evidence: %.2f, Distinct agents: %d, Distinct repos: %d, Type: %s, Gated status: %s",
+                rawEvidenceCount, effectiveEvidence, distinctAgents.size(), distinctRepos.size(), memoryType, status);
 
         return ConfidenceAssessment.builder()
                 .calibratedConfidence(calibratedConfidence)

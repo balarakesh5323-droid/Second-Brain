@@ -281,6 +281,7 @@ Always conclude your session cleanly by writing structured handoff notes for the
 | MCP Tool Name | Description & Use Case | Key Arguments |
 | :--- | :--- | :--- |
 | `brain_context_pack` | **Flagship 1-Shot Multi-Modal Briefing**: Assembles repo state, handoffs, decisions, failures, warnings, and next steps in 1 call. | `task`, `repository`, `project` |
+| `brain_get_work_history` | **Cross-Agent Work Narrative & Continuity**: Detailed chronological history of prior trials, failed attempts, lessons learned, and decisions by Claude Code, Codex, Cursor, etc. | `repository`, `project`, `task`, `limit` |
 | `brain_start_session` | Begins an incremental agent session with durable sequence tracking. | `agent_name`, `task`, `repository_id`, `project_id` |
 | `brain_record_event` | Durable append-only event (`DECISION_MADE`, `FAILED_ATTEMPT`, `PROBLEM_DISCOVERED`, `FILE_TOUCHED`, `GIT_COMMIT`). | `session_id`, `event_type`, `decision`, `failed_attempt`, `commit`, `file_path` |
 | `brain_complete_session` | Concludes active session with status (`COMPLETED`/`FAILED`) and handoff payload. | `session_id`, `status`, `summary`, `handoff` |
@@ -293,6 +294,7 @@ Always conclude your session cleanly by writing structured handoff notes for the
 | `brain_impact_analysis` | Evaluates blast radius and downstream callers of a diff. | `file_path`, `diff_or_code`, `project_id` |
 | `brain_review_changes` | Graph-augmented automated code review on current working tree. | `working_tree_diff`, `project_id`, `repository_id` |
 | `brain_store_memory` | Saves high-level architectural memory or developer preference. | `content`, `type`, `scope`, `tags` |
+| `brain_consolidate_memories` | Runs autonomous memory consolidation loop. | *None* |
 | `brain_doctor` | Runs deep multi-service health and diagnostic check. | *None* |
 
 ---

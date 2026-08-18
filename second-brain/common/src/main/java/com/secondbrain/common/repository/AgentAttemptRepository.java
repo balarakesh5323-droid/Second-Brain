@@ -33,6 +33,9 @@ public interface AgentAttemptRepository extends JpaRepository<AgentAttempt, UUID
     @Query("SELECT a FROM AgentAttempt a ORDER BY a.createdAt DESC")
     List<AgentAttempt> findAllOrderByCreatedAtDesc();
 
+    @Query("SELECT a FROM AgentAttempt a ORDER BY a.createdAt DESC")
+    List<AgentAttempt> findAllOrderByCreatedAtDesc(org.springframework.data.domain.Pageable pageable);
+
     List<AgentAttempt> findByStatus(String status);
 
     @Query("SELECT a FROM AgentAttempt a WHERE a.status = :status AND a.repository.id = :repoId ORDER BY a.createdAt DESC")
