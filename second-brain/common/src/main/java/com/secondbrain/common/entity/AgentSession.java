@@ -47,5 +47,5 @@ public class AgentSession extends BaseEntity {
 
     @Column(name = "event_sequence", nullable = false)
     @Builder.Default
-    private Integer eventSequence = 0;
+    private Long eventSequence = 0L;
 }

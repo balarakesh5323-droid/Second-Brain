@@ -33,7 +33,7 @@ public class AgentEvent extends BaseEntity {
     private EventType eventType;
 
     @Column(name = "sequence_number", updatable = false)
-    private Integer sequenceNumber;
+    private Long sequenceNumber;
 
     @Column(updatable = false)
     private String description;

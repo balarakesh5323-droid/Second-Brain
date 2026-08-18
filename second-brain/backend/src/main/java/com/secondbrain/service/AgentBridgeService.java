@@ -59,6 +59,7 @@ public class AgentBridgeService {
 
         // 3. Resolve or create active AgentSession
         AgentSession session = resolveOrCreateSession(agent, repo, project, payload.getSessionId());
+        session = lockSession(session.getId());
 
         // 4. Create AgentEvent
         com.secondbrain.common.enums.EventType evtType = com.secondbrain.common.enums.EventType.COMMAND_EXECUTED;
@@ -68,7 +69,7 @@ public class AgentBridgeService {
             } catch (Exception ignored) {}
         }
 
-        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
         session.setEventSequence(nextSeq);
         sessionRepository.save(session);
 
@@ -481,6 +482,11 @@ public class AgentBridgeService {
         return map;
     }
 
+    private AgentSession lockSession(UUID sessionId) {
+        return sessionRepository.findByIdForUpdate(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+    }
+
     private AgentSession resolveOrCreateSession(Agent agent, RepositoryEntity repo, Project project, UUID sessionId) {
         if (sessionId != null) {
             var existing = sessionRepository.findById(sessionId);
@@ -697,7 +703,7 @@ public class AgentBridgeService {
                 .status(com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name())
                 .startedAt(startedAt)
                 .endedAt(null)
-                .eventSequence(1)
+                .eventSequence(1L)
                 .build();
         session = sessionRepository.save(session);
         UUID sessionId = session.getId();
@@ -705,7 +711,7 @@ public class AgentBridgeService {
         // 1. Record immutable Event #1 (SESSION_STARTED) in PostgreSQL durable log
         AgentEvent startEvt = AgentEvent.builder()
                 .session(session)
-                .sequenceNumber(1)
+                .sequenceNumber(1L)
                 .eventType(com.secondbrain.common.enums.EventType.SESSION_STARTED)
                 .description("Session started by " + agentName + " on task: " + session.getTask())
                 .processingStatus("COMPLETED")
@@ -743,8 +749,7 @@ public class AgentBridgeService {
     @Transactional
     public Map<String, Object> appendSessionEvent(UUID sessionId, SessionEventPayload payload) {
         // Row-level lock on session row to guarantee strict monotonic sequence allocation under concurrency
-        AgentSession session = sessionRepository.findByIdForUpdate(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+        AgentSession session = lockSession(sessionId);
 
         // Reject appending events to already COMPLETED or FAILED sessions
         if (!com.secondbrain.common.enums.AgentSessionStatus.IN_PROGRESS.name().equalsIgnoreCase(session.getStatus())) {
@@ -788,7 +793,7 @@ public class AgentBridgeService {
         }
 
         // Atomically allocate the next monotonic sequence number for this session
-        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
         session.setEventSequence(nextSeq);
         sessionRepository.save(session);
 
@@ -935,8 +940,7 @@ public class AgentBridgeService {
 
     @Transactional
     public Map<String, Object> completeSession(UUID sessionId, CompleteSessionPayload payload) {
-        AgentSession session = sessionRepository.findByIdForUpdate(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionId));
+        AgentSession session = lockSession(sessionId);
 
         // Idempotency: If already completed or failed, return existing completion state cleanly
         if (com.secondbrain.common.enums.AgentSessionStatus.COMPLETED.name().equalsIgnoreCase(session.getStatus()) ||
@@ -960,7 +964,7 @@ public class AgentBridgeService {
         }
 
         LocalDateTime endedAt = LocalDateTime.now();
-        int currentSeq = session.getEventSequence() != null ? session.getEventSequence() : 0;
+        long currentSeq = session.getEventSequence() != null ? session.getEventSequence() : 0L;
 
         Agent agent = session.getAgent();
         RepositoryEntity repo = session.getRepository();

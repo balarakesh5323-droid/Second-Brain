@@ -110,11 +110,16 @@ public class BrainToolHandler {
                     "Error: session_id is required for recording events")), true);
             }
 
-            AgentSession session = sessionRepository.findById(UUID.fromString(sessionId))
+            AgentSession session = sessionRepository.findByIdForUpdate(UUID.fromString(sessionId))
                 .orElseThrow(() -> new RuntimeException("Session not found: " + sessionId));
+
+            long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
+            session.setEventSequence(nextSeq);
+            sessionRepository.save(session);
 
             AgentEvent event = AgentEvent.builder()
                 .session(session)
+                .sequenceNumber(nextSeq)
                 .eventType(EventType.valueOf(eventType))
                 .description(description)
                 .filePath(filePath)

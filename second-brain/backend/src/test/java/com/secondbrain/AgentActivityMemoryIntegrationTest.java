@@ -361,19 +361,19 @@ public class AgentActivityMemoryIntegrationTest {
         // Step E: Verify chronological immutable Event Log
         var events = bridgeService.getSessionEvents(sessionId);
         assertThat(events).hasSize(5);
-        assertThat(events.get(0).getSequenceNumber()).isEqualTo(1);
+        assertThat(events.get(0).getSequenceNumber()).isEqualTo(1L);
         assertThat(events.get(0).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.SESSION_STARTED);
 
-        assertThat(events.get(1).getSequenceNumber()).isEqualTo(2);
+        assertThat(events.get(1).getSequenceNumber()).isEqualTo(2L);
         assertThat(events.get(1).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.DECISION_MADE);
 
-        assertThat(events.get(2).getSequenceNumber()).isEqualTo(3);
+        assertThat(events.get(2).getSequenceNumber()).isEqualTo(3L);
         assertThat(events.get(2).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.FAILED_ATTEMPT);
 
-        assertThat(events.get(3).getSequenceNumber()).isEqualTo(4);
+        assertThat(events.get(3).getSequenceNumber()).isEqualTo(4L);
         assertThat(events.get(3).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.HANDOFF_CREATED);
 
-        assertThat(events.get(4).getSequenceNumber()).isEqualTo(5);
+        assertThat(events.get(4).getSequenceNumber()).isEqualTo(5L);
         assertThat(events.get(4).getEventType()).isEqualTo(com.secondbrain.common.enums.EventType.SESSION_ENDED);
 
         // Step F: Reject appending new events after session completion
@@ -462,9 +462,9 @@ public class AgentActivityMemoryIntegrationTest {
         assertThat(events).hasSize(21); // 1 start + 20 concurrent events
 
         // Assert strictly monotonic 1..21 without gaps or duplicates
-        List<Integer> sequences = events.stream().map(com.secondbrain.common.entity.AgentEvent::getSequenceNumber).toList();
+        List<Long> sequences = events.stream().map(com.secondbrain.common.entity.AgentEvent::getSequenceNumber).toList();
         for (int i = 1; i <= 21; i++) {
-            assertThat(sequences.get(i - 1)).isEqualTo(i);
+            assertThat(sequences.get(i - 1)).isEqualTo((long) i);
         }
         assertThat(sequences.stream().distinct().count()).isEqualTo(21);
     }

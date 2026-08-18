@@ -23,9 +23,9 @@ public class AgentEventService {
 
     @Transactional
     public AgentEvent recordEvent(EventDto dto) {
-        AgentSession session = agentSessionRepository.findById(dto.getSessionId())
+        AgentSession session = agentSessionRepository.findByIdForUpdate(dto.getSessionId())
                 .orElseThrow(() -> new ResourceNotFoundException("AgentSession", dto.getSessionId()));
-        int nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0) + 1;
+        long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
         session.setEventSequence(nextSeq);
         agentSessionRepository.save(session);
 
