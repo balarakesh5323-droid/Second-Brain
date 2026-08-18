@@ -27,6 +27,7 @@ public class ContextPackService {
     private final SemanticSearchService semanticSearchService;
     private final GraphService graphService;
     private final GitService gitService;
+    private final RelevanceScoringService relevanceScoringService;
 
     public Map<String, Object> assembleContextPack(String task, String repoIdOrPath, String projectId) {
         log.info("Assembling 1-Shot Context Pack for task: '{}', repo: '{}'", task, repoIdOrPath);
@@ -34,20 +35,23 @@ public class ContextPackService {
         Map<String, Object> pack = new LinkedHashMap<>();
         pack.put("task", task != null ? task : "General engineering task");
 
-        // 1. Resolve Repository & Git Status
-        RepositoryEntity repo = resolveRepository(repoIdOrPath);
-        Project project = resolveProject(projectId, repo);
+        // 1. Resolve Primary Repository & Project
+        RepositoryEntity primaryRepo = resolveRepository(repoIdOrPath);
+        Project project = resolveProject(projectId, primaryRepo);
+
+        UUID primaryRepoId = primaryRepo != null ? primaryRepo.getId() : null;
+        UUID activeProjectId = project != null ? project.getId() : null;
 
         Map<String, Object> repoInfo = new LinkedHashMap<>();
-        if (repo != null) {
-            repoInfo.put("id", repo.getId().toString());
-            repoInfo.put("name", repo.getName());
-            repoInfo.put("path", repo.getPath());
-            repoInfo.put("url", repo.getUrl());
+        if (primaryRepo != null) {
+            repoInfo.put("id", primaryRepo.getId().toString());
+            repoInfo.put("name", primaryRepo.getName());
+            repoInfo.put("path", primaryRepo.getPath());
+            repoInfo.put("url", primaryRepo.getUrl());
 
             try {
-                var gitStatus = gitService.getWorkingTreeStatus(repo.getPath());
-                repoInfo.put("branch", gitService.getCurrentBranch(repo.getPath()));
+                var gitStatus = gitService.getWorkingTreeStatus(primaryRepo.getPath());
+                repoInfo.put("branch", gitService.getCurrentBranch(primaryRepo.getPath()));
                 repoInfo.put("gitStatus", gitStatus.get("state"));
                 repoInfo.put("modifiedFilesCount", gitStatus.get("modifiedCount"));
             } catch (Exception e) {
@@ -64,10 +68,34 @@ public class ContextPackService {
         }
         pack.put("project", projInfo);
 
-        // 2. Active Sessions on this Repository
+        // 2. Multi-Repository Awareness: Sibling Repositories in Project
+        List<Map<String, Object>> siblingRepos = new ArrayList<>();
+        if (project != null) {
+            List<RepositoryEntity> projectRepos = repositoryRepository.findByProjectId(project.getId());
+            for (RepositoryEntity r : projectRepos) {
+                if (primaryRepo != null && r.getId().equals(primaryRepo.getId())) {
+                    continue; // Skip primary repo (already in section 1)
+                }
+                Map<String, Object> sib = new LinkedHashMap<>();
+                sib.put("id", r.getId().toString());
+                sib.put("name", r.getName());
+                sib.put("path", r.getPath());
+                try {
+                    var status = gitService.getWorkingTreeStatus(r.getPath());
+                    sib.put("gitStatus", status.get("state"));
+                    sib.put("branch", gitService.getCurrentBranch(r.getPath()));
+                } catch (Exception ignored) {
+                    sib.put("gitStatus", "UNKNOWN");
+                }
+                siblingRepos.add(sib);
+            }
+        }
+        pack.put("siblingRepositories", siblingRepos);
+
+        // 3. Active Sessions on this Repository & Project
         List<Map<String, Object>> activeSessions = new ArrayList<>();
-        if (repo != null) {
-            var sessions = sessionRepository.findByRepositoryId(repo.getId());
+        if (primaryRepo != null) {
+            var sessions = sessionRepository.findByRepositoryId(primaryRepo.getId());
             for (var s : sessions) {
                 if ("IN_PROGRESS".equalsIgnoreCase(s.getStatus()) || "active".equalsIgnoreCase(s.getStatus())) {
                     Map<String, Object> sMap = new LinkedHashMap<>();
@@ -81,10 +109,10 @@ public class ContextPackService {
         }
         pack.put("activeSessions", activeSessions);
 
-        // 3. Latest Handoff
+        // 4. Latest Handoff
         Map<String, Object> latestHandoffMap = null;
-        if (repo != null) {
-            var handoffOpt = handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(repo.getId());
+        if (primaryRepo != null) {
+            var handoffOpt = handoffRepository.findFirstByRepositoryIdOrderByCreatedAtDesc(primaryRepo.getId());
             if (handoffOpt.isPresent()) {
                 AgentHandoff h = handoffOpt.get();
                 latestHandoffMap = new LinkedHashMap<>();
@@ -100,94 +128,126 @@ public class ContextPackService {
         }
         pack.put("latestHandoff", latestHandoffMap);
 
-        Set<String> taskKeywords = extractKeywords(task);
+        Set<String> taskTokens = relevanceScoringService.extractTokens(task);
 
-        // 4. Relevant Decisions (Task-aware relevance ranked)
+        // 5. Relevant Decisions (Unified Multi-Signal Relevance Ranked with Scope & Threshold)
+        List<RelevanceScoringService.ScoredCandidate<Decision>> decisionCandidates = new ArrayList<>();
+        if (primaryRepo != null) {
+            for (Decision d : decisionRepository.findByRepositoryId(primaryRepo.getId())) {
+                String text = (d.getTitle() != null ? d.getTitle() : "") + " " + (d.getRationale() != null ? d.getRationale() : "");
+                decisionCandidates.add(relevanceScoringService.scoreCandidate(
+                        d, text, primaryRepoId, activeProjectId,
+                        d.getRepository() != null ? d.getRepository().getId() : null,
+                        d.getProject() != null ? d.getProject().getId() : null,
+                        d.getRepository() != null ? d.getRepository().getName() : primaryRepo.getName(),
+                        d.getCreatedAt(), taskTokens
+                ));
+            }
+        }
+        if (project != null) {
+            for (Decision d : decisionRepository.findByProjectId(project.getId())) {
+                if (primaryRepo != null && d.getRepository() != null && primaryRepo.getId().equals(d.getRepository().getId())) {
+                    continue; // already added above
+                }
+                String text = (d.getTitle() != null ? d.getTitle() : "") + " " + (d.getRationale() != null ? d.getRationale() : "");
+                decisionCandidates.add(relevanceScoringService.scoreCandidate(
+                        d, text, primaryRepoId, activeProjectId,
+                        d.getRepository() != null ? d.getRepository().getId() : null,
+                        d.getProject() != null ? d.getProject().getId() : null,
+                        d.getRepository() != null ? d.getRepository().getName() : null,
+                        d.getCreatedAt(), taskTokens
+                ));
+            }
+        }
+
+        List<RelevanceScoringService.ScoredCandidate<Decision>> rankedDecisions = relevanceScoringService.rankAndFilter(
+                decisionCandidates, RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
+        );
+
         List<Map<String, Object>> relevantDecisions = new ArrayList<>();
-        if (repo != null || project != null) {
-            List<Decision> allDecisions = repo != null 
-                    ? decisionRepository.findByRepositoryId(repo.getId())
-                    : (project != null ? decisionRepository.findByProjectId(project.getId()) : List.of());
-
-            List<ScoredItem<Decision>> scoredDecisions = new ArrayList<>();
-            for (var d : allDecisions) {
-                String fullText = (d.getTitle() != null ? d.getTitle() : "") + " " + (d.getRationale() != null ? d.getRationale() : "");
-                double score = computeRelevanceScore(fullText, taskKeywords, 0.70);
-                List<String> matched = findMatchedKeywords(fullText, taskKeywords);
-                String reason = matched.isEmpty()
-                        ? "Recent architectural decision in repository"
-                        : "Matches task keywords [" + String.join(", ", matched) + "] in repository";
-                scoredDecisions.add(new ScoredItem<>(d, score, reason, matched));
+        for (var scored : rankedDecisions) {
+            Decision d = scored.getItem();
+            Map<String, Object> dMap = new LinkedHashMap<>();
+            dMap.put("title", d.getTitle());
+            dMap.put("rationale", d.getRationale());
+            dMap.put("status", d.getStatus());
+            dMap.put("scope", scored.getScope());
+            if (scored.getRepositoryName() != null) {
+                dMap.put("repositoryName", scored.getRepositoryName());
             }
-
-            scoredDecisions.sort((a, b) -> Double.compare(b.score, a.score));
-
-            for (var item : scoredDecisions) {
-                Decision d = item.item;
-                Map<String, Object> dMap = new LinkedHashMap<>();
-                dMap.put("title", d.getTitle());
-                dMap.put("rationale", d.getRationale());
-                dMap.put("status", d.getStatus());
-                dMap.put("relevance", Math.round(item.score * 100.0) / 100.0);
-                dMap.put("reason", item.reason);
-                dMap.put("createdAt", d.getCreatedAt());
-                relevantDecisions.add(dMap);
-                if (relevantDecisions.size() >= 5) break;
-            }
+            dMap.put("relevance", scored.getRelevance());
+            dMap.put("reason", scored.getReason());
+            dMap.put("createdAt", d.getCreatedAt());
+            relevantDecisions.add(dMap);
         }
         pack.put("relevantDecisions", relevantDecisions);
 
-        // 5. Relevant Failed & Successful Attempts (Failure Avoidance & Task-aware relevance ranked)
-        List<Map<String, Object>> relevantFailures = new ArrayList<>();
-        if (repo != null || project != null) {
-            List<AgentAttempt> allAttempts = repo != null
-                    ? attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(repo.getId())
-                    : (project != null ? attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId()) : List.of());
-
-            List<ScoredItem<AgentAttempt>> scoredFailures = new ArrayList<>();
-            for (var a : allAttempts) {
-                if ("FAILED".equalsIgnoreCase(a.getStatus()) || "FAILURE".equalsIgnoreCase(a.getStatus())) {
-                    String fullText = (a.getApproach() != null ? a.getApproach() : "") + " "
-                            + (a.getErrorMessage() != null ? a.getErrorMessage() : "") + " "
-                            + (a.getLessonLearned() != null ? a.getLessonLearned() : "") + " "
-                            + (a.getTaskDescription() != null ? a.getTaskDescription() : "");
-                    double score = computeRelevanceScore(fullText, taskKeywords, 0.75);
-                    List<String> matched = findMatchedKeywords(fullText, taskKeywords);
-                    String reason = matched.isEmpty()
-                            ? "Prior failed trial in repository"
-                            : "Prior failure matching task technologies [" + String.join(", ", matched) + "]";
-                    scoredFailures.add(new ScoredItem<>(a, score, reason, matched));
+        // 6. Relevant Failed Attempts (Multi-Signal Ranked Failure Avoidance with Threshold)
+        List<RelevanceScoringService.ScoredCandidate<AgentAttempt>> failureCandidates = new ArrayList<>();
+        List<AgentAttempt> allRawAttempts = new ArrayList<>();
+        if (primaryRepo != null) {
+            allRawAttempts.addAll(attemptRepository.findByRepositoryIdOrderByCreatedAtDesc(primaryRepo.getId()));
+        }
+        if (project != null) {
+            for (AgentAttempt a : attemptRepository.findByProjectIdOrderByCreatedAtDesc(project.getId())) {
+                if (primaryRepo != null && a.getRepository() != null && primaryRepo.getId().equals(a.getRepository().getId())) {
+                    continue; // already added above
                 }
+                allRawAttempts.add(a);
             }
+        }
 
-            scoredFailures.sort((a, b) -> Double.compare(b.score, a.score));
+        for (AgentAttempt a : allRawAttempts) {
+            if ("FAILED".equalsIgnoreCase(a.getStatus()) || "FAILURE".equalsIgnoreCase(a.getStatus())) {
+                String fullText = (a.getApproach() != null ? a.getApproach() : "") + " "
+                        + (a.getErrorMessage() != null ? a.getErrorMessage() : "") + " "
+                        + (a.getLessonLearned() != null ? a.getLessonLearned() : "") + " "
+                        + (a.getTaskDescription() != null ? a.getTaskDescription() : "");
 
-            for (var item : scoredFailures) {
-                AgentAttempt a = item.item;
-                Map<String, Object> aMap = new LinkedHashMap<>();
-                aMap.put("approach", a.getApproach());
-                aMap.put("errorMessage", a.getErrorMessage());
-                aMap.put("lessonLearned", a.getLessonLearned());
-                aMap.put("agentName", a.getAgentName());
-                aMap.put("relevance", Math.round(item.score * 100.0) / 100.0);
-                aMap.put("reason", item.reason);
-                aMap.put("createdAt", a.getCreatedAt());
-                relevantFailures.add(aMap);
-                if (relevantFailures.size() >= 5) break;
+                failureCandidates.add(relevanceScoringService.scoreCandidate(
+                        a, fullText, primaryRepoId, activeProjectId,
+                        a.getRepository() != null ? a.getRepository().getId() : null,
+                        a.getProject() != null ? a.getProject().getId() : null,
+                        a.getRepository() != null ? a.getRepository().getName() : (primaryRepo != null ? primaryRepo.getName() : null),
+                        a.getCreatedAt(), taskTokens
+                ));
             }
+        }
+
+        List<RelevanceScoringService.ScoredCandidate<AgentAttempt>> rankedFailures = relevanceScoringService.rankAndFilter(
+                failureCandidates, RelevanceScoringService.DEFAULT_MIN_RELEVANCE, 5
+        );
+
+        List<Map<String, Object>> relevantFailures = new ArrayList<>();
+        for (var scored : rankedFailures) {
+            AgentAttempt a = scored.getItem();
+            Map<String, Object> aMap = new LinkedHashMap<>();
+            aMap.put("approach", a.getApproach());
+            aMap.put("errorMessage", a.getErrorMessage());
+            aMap.put("lessonLearned", a.getLessonLearned());
+            aMap.put("agentName", a.getAgentName());
+            aMap.put("scope", scored.getScope());
+            if (scored.getRepositoryName() != null) {
+                aMap.put("repositoryName", scored.getRepositoryName());
+            }
+            aMap.put("relevance", scored.getRelevance());
+            aMap.put("reason", scored.getReason());
+            aMap.put("createdAt", a.getCreatedAt());
+            relevantFailures.add(aMap);
         }
         pack.put("relevantFailures", relevantFailures);
 
-        // 6. Relevant Code Symbols (Vector search on task with semantic score & reason)
+        // 7. Relevant Code Symbols (Vector search on task)
         List<Map<String, Object>> relevantSymbols = new ArrayList<>();
         if (task != null && !task.isBlank()) {
             try {
-                String repoScope = repo != null ? repo.getId().toString() : null;
+                String repoScope = primaryRepo != null ? primaryRepo.getId().toString() : null;
                 List<SearchResult> symbolResults = semanticSearchService.searchScoped(task, "symbol_knowledge", null, repoScope, 5);
                 for (SearchResult sr : symbolResults) {
                     Map<String, Object> sym = new LinkedHashMap<>();
                     sym.put("relevance", Math.round(sr.getScore() * 100.0) / 100.0);
-                    sym.put("reason", "Semantic vector match for task in repository symbols");
+                    sym.put("scope", "REPOSITORY");
+                    sym.put("reason", "Semantic vector match for task query in repository symbols");
                     if (sr.getPayload() != null) {
                         sym.put("name", sr.getPayload().get("name"));
                         sym.put("file", sr.getPayload().get("file"));
@@ -202,18 +262,18 @@ public class ContextPackService {
         }
         pack.put("relevantSymbols", relevantSymbols);
 
-        // 7. Graph-RAG Structural Subgraph
+        // 8. Graph-RAG Structural Subgraph
         List<Map<String, Object>> relevantGraph = new ArrayList<>();
         try {
-            if (repo != null) {
-                relevantGraph = graphService.findRelated("Repository", repo.getId().toString(), null, 2);
+            if (primaryRepo != null) {
+                relevantGraph = graphService.findRelated("Repository", primaryRepo.getId().toString(), null, 2);
             }
         } catch (Exception e) {
             log.warn("Failed fetching graph context: {}", e.getMessage());
         }
         pack.put("relevantGraph", relevantGraph.stream().limit(10).toList());
 
-        // 8. Open Tasks
+        // 9. Open Tasks
         List<Map<String, Object>> openTasks = new ArrayList<>();
         if (project != null) {
             var tasks = taskRepository.findByStatusAndProjectId(TaskStatus.OPEN, project.getId());
@@ -227,14 +287,19 @@ public class ContextPackService {
         }
         pack.put("openTasks", openTasks);
 
-        // 9. Automated Intelligent Warnings
+        // 10. Automated Intelligent Warnings (with Multi-Repo Checks)
         List<String> warnings = new ArrayList<>();
         if (repoInfo.containsKey("gitStatus") && !"CLEAN".equalsIgnoreCase((String) repoInfo.get("gitStatus"))) {
             warnings.add("⚠️ Working tree has uncommitted modifications (" + repoInfo.get("modifiedFilesCount") + " modified files).");
         }
         if (!relevantFailures.isEmpty()) {
-            Map<String, Object> latestFail = relevantFailures.get(0);
-            warnings.add("⚠️ Previous failed attempt: '" + latestFail.get("approach") + "'. Lesson: " + latestFail.get("lessonLearned"));
+            Map<String, Object> topFail = relevantFailures.get(0);
+            warnings.add("⚠️ Previous failed attempt (" + topFail.get("scope") + "): '" + topFail.get("approach") + "'. Lesson: " + topFail.get("lessonLearned"));
+        }
+        for (Map<String, Object> sib : siblingRepos) {
+            if ("MODIFIED".equalsIgnoreCase((String) sib.get("gitStatus")) || "MIXED".equalsIgnoreCase((String) sib.get("gitStatus"))) {
+                warnings.add("ℹ️ Sibling repository '" + sib.get("name") + "' has uncommitted changes in branch '" + sib.get("branch") + "'.");
+            }
         }
         long pendingOutbox = outboxRepository.countByStatus(OutboxStatus.PENDING);
         if (pendingOutbox > 0) {
@@ -242,7 +307,7 @@ public class ContextPackService {
         }
         pack.put("warnings", warnings);
 
-        // 10. Recommended Next Actions
+        // 11. Recommended Next Actions
         List<String> recommendations = new ArrayList<>();
         if (latestHandoffMap != null && latestHandoffMap.get("nextSteps") != null && !((String) latestHandoffMap.get("nextSteps")).isBlank()) {
             recommendations.add("Review latest handoff nextSteps: " + latestHandoffMap.get("nextSteps"));
@@ -283,47 +348,4 @@ public class ContextPackService {
         }
         return projectRepository.findAll().stream().findFirst().orElse(null);
     }
-
-    private Set<String> extractKeywords(String text) {
-        if (text == null || text.isBlank()) return Set.of();
-        Set<String> stopWords = Set.of(
-                "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or", "is", "are", "with", "by", "from", "as"
-        );
-        Set<String> keywords = new HashSet<>();
-        String[] tokens = text.toLowerCase().split("[^a-zA-Z0-9_-]+");
-        for (String t : tokens) {
-            if (t.length() > 2 && !stopWords.contains(t)) {
-                keywords.add(t);
-            }
-        }
-        return keywords;
-    }
-
-    private double computeRelevanceScore(String text, Set<String> taskKeywords, double baseScore) {
-        if (text == null || taskKeywords.isEmpty()) return baseScore;
-        String lower = text.toLowerCase();
-        int matches = 0;
-        for (String kw : taskKeywords) {
-            if (lower.contains(kw)) {
-                matches++;
-            }
-        }
-        if (matches == 0) return baseScore;
-        double boost = Math.min(0.25, matches * 0.08);
-        return Math.min(0.98, baseScore + boost);
-    }
-
-    private List<String> findMatchedKeywords(String text, Set<String> taskKeywords) {
-        if (text == null || taskKeywords.isEmpty()) return List.of();
-        String lower = text.toLowerCase();
-        List<String> matched = new ArrayList<>();
-        for (String kw : taskKeywords) {
-            if (lower.contains(kw)) {
-                matched.add(kw);
-            }
-        }
-        return matched;
-    }
-
-    private record ScoredItem<T>(T item, double score, String reason, List<String> matchedKeywords) {}
 }
