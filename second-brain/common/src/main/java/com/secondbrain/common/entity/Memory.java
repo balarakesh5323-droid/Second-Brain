@@ -99,7 +99,7 @@ public class Memory extends BaseEntity {
     @Builder.Default
     private Integer evidenceCount = 1;
 
-    @Column(name = "memory_key", length = 255)
+    @Column(name = "memory_key", unique = true, length = 255)
     private String memoryKey;
 
     @ElementCollection(fetch = FetchType.LAZY)

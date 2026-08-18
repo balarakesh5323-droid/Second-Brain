@@ -35,7 +35,7 @@ public class MemoryConsolidationService {
 
     /**
      * Autonomous consolidation cycle: runs daily at 2:00 AM, or on-demand via API / MCP.
-     * Protected by PostgreSQL distributed advisory lock to prevent multi-node overlap.
+     * Protected by PostgreSQL distributed advisory lock holding a dedicated connection.
      */
     @Scheduled(cron = "0 0 2 * * ?")
     public Map<String, Object> runConsolidationCycle() {
@@ -79,21 +79,19 @@ public class MemoryConsolidationService {
 
     /**
      * 1. Architectural Decision Learning (Incremental & Database-Backed):
-     * Incremental batch processing with deterministic memory keys and evidence linking.
+     * Incremental batch processing with composite (timestamp, id) cursor, deterministic memory keys, and evidence linking.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateArchitecturalDecisions() {
         ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("DECISION_CURSOR");
         LocalDateTime cursor = checkpoint.getLastProcessedAt();
+        UUID lastId = checkpoint.getLastProcessedId();
 
-        List<Decision> batch = (cursor != null)
-                ? decisionRepository.findByCreatedAtAfterOrderByCreatedAtAsc(cursor, PageRequest.of(0, BATCH_SIZE))
-                : decisionRepository.findAllByOrderByCreatedAtAsc(PageRequest.of(0, BATCH_SIZE));
-
+        List<Decision> batch = decisionRepository.findIncremental(cursor, lastId, PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) return 0;
 
         int synthesized = 0;
-        LocalDateTime latestProcessedTime = cursor;
+        Decision lastDecision = batch.get(batch.size() - 1);
 
         // Group batch by project & topic
         Map<String, List<Decision>> topicClusters = new LinkedHashMap<>();
@@ -104,9 +102,6 @@ public class MemoryConsolidationService {
                 String projectKey = d.getProject() != null ? d.getProject().getId().toString() : "GLOBAL";
                 String clusterKey = projectKey + ":" + topic;
                 topicClusters.computeIfAbsent(clusterKey, k -> new ArrayList<>()).add(d);
-            }
-            if (latestProcessedTime == null || (d.getCreatedAt() != null && d.getCreatedAt().isAfter(latestProcessedTime))) {
-                latestProcessedTime = d.getCreatedAt();
             }
         }
 
@@ -132,10 +127,15 @@ public class MemoryConsolidationService {
                 }
                 memory.setEvidenceCount(memory.getEvidenceSources().size());
                 memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.92));
+                if (memory.getEvidenceSources().size() >= 3) {
+                    memory.setStatus(MemoryStatus.ESTABLISHED);
+                } else {
+                    memory.setStatus(MemoryStatus.CONFIRMED);
+                }
                 memoryRepository.save(memory);
                 enqueueOutboxProjections(memory);
                 synthesized++;
-            } else if (cluster.size() >= 2 || hasSemanticClusterMatches(topic, projectKey)) {
+            } else if (cluster.size() >= 2 || hasStrongSemanticClusterMatches(topic, projectKey)) {
                 // Synthesize new architectural standard
                 Decision sample = cluster.get(0);
                 String content = String.format(
@@ -148,6 +148,9 @@ public class MemoryConsolidationService {
                     if (d.getId() != null) evidence.add("decision:" + d.getId());
                 }
 
+                MemoryStatus status = (cluster.size() >= 3) ? MemoryStatus.ESTABLISHED
+                        : (cluster.size() >= 2 ? MemoryStatus.CONFIRMED : MemoryStatus.PROPOSED);
+
                 Memory memory = Memory.builder()
                         .memoryKey(memoryKey)
                         .content(content)
@@ -155,7 +158,7 @@ public class MemoryConsolidationService {
                         .scope(sample.getProject() != null ? MemoryScope.PROJECT : MemoryScope.GLOBAL)
                         .project(sample.getProject())
                         .repository(sample.getRepository())
-                        .status(MemoryStatus.CONFIRMED)
+                        .status(status)
                         .confidence(calculateDiversityConfidence(evidence.size(), 0.90))
                         .importance(0.88)
                         .observationCount(cluster.size())
@@ -173,8 +176,9 @@ public class MemoryConsolidationService {
             }
         }
 
-        // Update checkpoint cursor
-        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        // Advance composite checkpoint cursor
+        checkpoint.setLastProcessedAt(lastDecision.getCreatedAt());
+        checkpoint.setLastProcessedId(lastDecision.getId());
         checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
         checkpoint.setLastRunStatus("SUCCESS");
         checkpointRepository.save(checkpoint);
@@ -183,22 +187,19 @@ public class MemoryConsolidationService {
     }
 
     /**
-     * 2. Failure Anti-Pattern Learning (Incremental & Database-Backed):
-     * Derives concrete prevention rules from failed trials with evidence links.
+     * 2. Failure Anti-Pattern Learning (Incremental & Database-Backed with Composite Cursor)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateFailureAntiPatterns() {
         ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("ATTEMPT_CURSOR");
         LocalDateTime cursor = checkpoint.getLastProcessedAt();
+        UUID lastId = checkpoint.getLastProcessedId();
 
-        List<AgentAttempt> batch = (cursor != null)
-                ? attemptRepository.findByStatusInAndCreatedAtAfterOrderByCreatedAtAsc(List.of("FAILED", "FAILURE"), cursor, PageRequest.of(0, BATCH_SIZE))
-                : attemptRepository.findByStatusInOrderByCreatedAtAsc(List.of("FAILED", "FAILURE"), PageRequest.of(0, BATCH_SIZE));
-
+        List<AgentAttempt> batch = attemptRepository.findIncrementalFailures(List.of("FAILED", "FAILURE"), cursor, lastId, PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) return 0;
 
         int learned = 0;
-        LocalDateTime latestProcessedTime = cursor;
+        AgentAttempt lastAttempt = batch.get(batch.size() - 1);
 
         for (AgentAttempt fa : batch) {
             String lesson = fa.getLessonLearned();
@@ -216,6 +217,9 @@ public class MemoryConsolidationService {
                     if (fa.getId() != null) memory.getEvidenceSources().add("attempt:" + fa.getId());
                     memory.setEvidenceCount(memory.getEvidenceSources().size());
                     memory.setConfidence(calculateDiversityConfidence(memory.getEvidenceSources().size(), 0.95));
+                    if (memory.getEvidenceSources().size() >= 2) {
+                        memory.setStatus(MemoryStatus.ESTABLISHED);
+                    }
                     memoryRepository.save(memory);
                     enqueueOutboxProjections(memory);
                     learned++;
@@ -252,13 +256,10 @@ public class MemoryConsolidationService {
                     learned++;
                 }
             }
-
-            if (latestProcessedTime == null || (fa.getCreatedAt() != null && fa.getCreatedAt().isAfter(latestProcessedTime))) {
-                latestProcessedTime = fa.getCreatedAt();
-            }
         }
 
-        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setLastProcessedAt(lastAttempt.getCreatedAt());
+        checkpoint.setLastProcessedId(lastAttempt.getId());
         checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
         checkpoint.setLastRunStatus("SUCCESS");
         checkpointRepository.save(checkpoint);
@@ -267,22 +268,19 @@ public class MemoryConsolidationService {
     }
 
     /**
-     * 3. Developer Preferences & Conventions (Incremental with Evidence Diversity):
-     * Evaluates distinct agents, sessions, and repos to avoid 1 agent artificially skewing confidence.
+     * 3. Developer Preferences & Conventions (Incremental with Composite Cursor & Evidence Diversity)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int consolidateDeveloperPreferences() {
         ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("SESSION_CURSOR");
         LocalDateTime cursor = checkpoint.getLastProcessedAt();
+        UUID lastId = checkpoint.getLastProcessedId();
 
-        List<AgentSession> batch = (cursor != null)
-                ? sessionRepository.findByStatusAndCreatedAtAfterOrderByCreatedAtAsc("COMPLETED", cursor, PageRequest.of(0, BATCH_SIZE))
-                : sessionRepository.findByStatusOrderByCreatedAtAsc("COMPLETED", PageRequest.of(0, BATCH_SIZE));
-
+        List<AgentSession> batch = sessionRepository.findIncrementalSessions("COMPLETED", cursor, lastId, PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) return 0;
 
         int learned = 0;
-        LocalDateTime latestProcessedTime = cursor;
+        AgentSession lastSession = batch.get(batch.size() - 1);
 
         // Group evidence by technology
         Map<String, Set<String>> techAgents = new HashMap<>();
@@ -300,10 +298,6 @@ public class MemoryConsolidationService {
                 trackTechEvidence("Neo4j Graph", task.contains("neo4j") || task.contains("graph"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
                 trackTechEvidence("Qdrant Vector", task.contains("qdrant") || task.contains("vector"), s.getId(), agentName, repoId, techAgents, techRepos, techSessions);
             }
-
-            if (latestProcessedTime == null || (s.getCreatedAt() != null && s.getCreatedAt().isAfter(latestProcessedTime))) {
-                latestProcessedTime = s.getCreatedAt();
-            }
         }
 
         for (String tech : techSessions.keySet()) {
@@ -311,9 +305,10 @@ public class MemoryConsolidationService {
             int sessionCount = techSessions.getOrDefault(tech, Set.of()).size();
             int repoCount = techRepos.getOrDefault(tech, Set.of()).size();
 
-            // Calculate confidence from evidence diversity
+            // Calibrated confidence from evidence diversity
             double diversityConfidence = Math.min(0.95, 0.50 + (agentCount * 0.15) + (repoCount * 0.10) + (sessionCount * 0.05));
             String provenance = (agentCount >= 2) ? "MULTI_AGENT_CONSENSUS" : "INFERRED_AGENT_EXPERIENCE";
+            MemoryStatus status = (agentCount >= 2 && sessionCount >= 2) ? MemoryStatus.ESTABLISHED : MemoryStatus.CONFIRMED;
 
             String memoryKey = "DEVELOPER_PREFERENCE:" + tech.toUpperCase().replaceAll("[^A-Z0-9]", "_");
             String content = String.format("Developer Preference: Standardized on %s for platform architecture across agent sessions.", tech);
@@ -330,6 +325,7 @@ public class MemoryConsolidationService {
                 memory.setEvidenceCount(memory.getEvidenceSources().size());
                 memory.setConfidence(diversityConfidence);
                 memory.setProvenanceSource(provenance);
+                memory.setStatus(status);
                 memory.setLastSeenAt(LocalDateTime.now());
                 memoryRepository.save(memory);
                 enqueueOutboxProjections(memory);
@@ -340,7 +336,7 @@ public class MemoryConsolidationService {
                         .content(content)
                         .type(MemoryType.PREFERENCE)
                         .scope(MemoryScope.GLOBAL)
-                        .status(MemoryStatus.CONFIRMED)
+                        .status(status)
                         .confidence(diversityConfidence)
                         .importance(0.80)
                         .observationCount(sessionCount)
@@ -358,7 +354,8 @@ public class MemoryConsolidationService {
             }
         }
 
-        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setLastProcessedAt(lastSession.getCreatedAt());
+        checkpoint.setLastProcessedId(lastSession.getId());
         checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
         checkpoint.setLastRunStatus("SUCCESS");
         checkpointRepository.save(checkpoint);
@@ -367,13 +364,13 @@ public class MemoryConsolidationService {
     }
 
     /**
-     * 4. Contradiction Resolution & Knowledge Superseding:
-     * Scans active memories in small batches to detect conflicting statements and update lifecycle.
+     * 4. Contradiction Resolution & Knowledge Superseding
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int resolveContradictionsAndSupersede() {
         List<Memory> activeMemories = memoryRepository.findByStatus(MemoryStatus.CONFIRMED);
         activeMemories.addAll(memoryRepository.findByStatus(MemoryStatus.OBSERVED));
+        activeMemories.addAll(memoryRepository.findByStatus(MemoryStatus.ESTABLISHED));
         int resolved = 0;
 
         for (int i = 0; i < activeMemories.size(); i++) {
@@ -414,6 +411,7 @@ public class MemoryConsolidationService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int compoundConfidence() {
         List<Memory> memories = memoryRepository.findByStatus(MemoryStatus.CONFIRMED);
+        memories.addAll(memoryRepository.findByStatus(MemoryStatus.ESTABLISHED));
         int compounded = 0;
 
         for (Memory m : memories) {
@@ -462,23 +460,18 @@ public class MemoryConsolidationService {
     public int consolidateHotspots() {
         ConsolidationCheckpoint checkpoint = getOrCreateCheckpoint("EVENT_CURSOR");
         LocalDateTime cursor = checkpoint.getLastProcessedAt();
+        UUID lastId = checkpoint.getLastProcessedId();
 
-        List<AgentEvent> batch = (cursor != null)
-                ? agentEventRepository.findByCreatedAtAfterOrderByCreatedAtAsc(cursor, PageRequest.of(0, BATCH_SIZE))
-                : agentEventRepository.findAllByOrderByCreatedAtAsc(PageRequest.of(0, BATCH_SIZE));
-
+        List<AgentEvent> batch = agentEventRepository.findIncrementalEvents(cursor, lastId, PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) return 0;
 
         int consolidated = 0;
-        LocalDateTime latestProcessedTime = cursor;
+        AgentEvent lastEvent = batch.get(batch.size() - 1);
         Map<String, List<AgentEvent>> fileEvents = new HashMap<>();
 
         for (AgentEvent event : batch) {
             if (event.getFilePath() != null && !event.getFilePath().isBlank()) {
                 fileEvents.computeIfAbsent(event.getFilePath(), k -> new ArrayList<>()).add(event);
-            }
-            if (latestProcessedTime == null || (event.getCreatedAt() != null && event.getCreatedAt().isAfter(latestProcessedTime))) {
-                latestProcessedTime = event.getCreatedAt();
             }
         }
 
@@ -529,7 +522,8 @@ public class MemoryConsolidationService {
             }
         }
 
-        checkpoint.setLastProcessedAt(latestProcessedTime != null ? latestProcessedTime : LocalDateTime.now());
+        checkpoint.setLastProcessedAt(lastEvent.getCreatedAt());
+        checkpoint.setLastProcessedId(lastEvent.getId());
         checkpoint.setProcessedCount(checkpoint.getProcessedCount() + batch.size());
         checkpoint.setLastRunStatus("SUCCESS");
         checkpointRepository.save(checkpoint);
@@ -546,12 +540,14 @@ public class MemoryConsolidationService {
                         .build()));
     }
 
-    private boolean hasSemanticClusterMatches(String topic, String projectKey) {
+    private boolean hasStrongSemanticClusterMatches(String topic, String projectKey) {
         try {
             List<SearchResult> results = semanticSearchService.searchScoped(
                     topic, "technical_memory", projectKey.equals("GLOBAL") ? null : projectKey, null, 5
             );
-            return results.stream().anyMatch(r -> r.getScore() > 0.85f);
+            // Requires at least 2 supporting semantic memories with high similarity (> 0.88)
+            long strongMatches = results.stream().filter(r -> r.getScore() > 0.88f).count();
+            return strongMatches >= 2;
         } catch (Exception e) {
             return false;
         }

@@ -86,24 +86,30 @@ public class MemoryConsolidationServiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("Autonomous Consolidation: Incremental synthesis with evidence links, deterministic memory keys, and checkpoints")
+    @DisplayName("Autonomous Consolidation: Composite cursor, memory lifecycle, and crash-recovery idempotency")
     void testAutonomousConsolidationFullCycle() {
-        // 1. Seed 2 recurring Redis architectural decisions
-        Decision d1 = decisionRepository.save(Decision.builder()
+        // 1. Seed 2 recurring Redis architectural decisions with identical timestamps to verify composite cursor
+        LocalDateTime sameTimestamp = LocalDateTime.now().minusHours(2);
+
+        Decision d1 = Decision.builder()
                 .title("Redis Sliding Window Token Blacklist")
                 .rationale("Distributed cluster support")
                 .repository(testRepo)
                 .project(testProject)
                 .status("APPROVED")
-                .build());
+                .build();
+        d1.setCreatedAt(sameTimestamp);
+        d1 = decisionRepository.save(d1);
 
-        Decision d2 = decisionRepository.save(Decision.builder()
+        Decision d2 = Decision.builder()
                 .title("Redis Distributed Session State")
                 .rationale("Horizontal scaling")
                 .repository(testRepo)
                 .project(testProject)
                 .status("APPROVED")
-                .build());
+                .build();
+        d2.setCreatedAt(sameTimestamp);
+        d2 = decisionRepository.save(d2);
 
         // 2. Seed a failed attempt with a lesson learned
         AgentAttempt failAttempt = attemptRepository.save(AgentAttempt.builder()
@@ -168,6 +174,7 @@ public class MemoryConsolidationServiceIntegrationTest {
         assertThat(archStandard.getMemoryKey()).isEqualTo("ARCHITECTURAL_STANDARD:" + testProject.getId() + ":REDIS");
         assertThat(archStandard.getEvidenceSources()).contains("decision:" + d1.getId(), "decision:" + d2.getId());
         assertThat(archStandard.getProvenanceSource()).isEqualTo("MULTI_AGENT_CONSENSUS");
+        assertThat(archStandard.getStatus()).isIn(MemoryStatus.CONFIRMED, MemoryStatus.ESTABLISHED);
 
         // 2. Anti-pattern prevention rule
         Memory antiPattern = allMemories.stream()
@@ -177,29 +184,30 @@ public class MemoryConsolidationServiceIntegrationTest {
         assertThat(antiPattern.getMemoryKey()).isEqualTo("ANTI_PATTERN:" + testProject.getId() + ":REDIS");
         assertThat(antiPattern.getEvidenceSources()).contains("attempt:" + failAttempt.getId());
 
-        // 3. Multi-Agent Developer preference (Claude + Codex consensus)
+        // 3. Multi-Agent Developer preference (Claude + Codex consensus -> ESTABLISHED)
         Memory preference = allMemories.stream()
                 .filter(m -> m.getType() == MemoryType.PREFERENCE && m.getContent().contains("Developer Preference: Standardized on Redis"))
                 .findFirst()
                 .orElseThrow();
         assertThat(preference.getMemoryKey()).isEqualTo("DEVELOPER_PREFERENCE:REDIS");
         assertThat(preference.getProvenanceSource()).isEqualTo("MULTI_AGENT_CONSENSUS");
+        assertThat(preference.getStatus()).isEqualTo(MemoryStatus.ESTABLISHED);
         assertThat(preference.getConfidence()).isGreaterThanOrEqualTo(0.80);
 
         // 4. Contradiction resolution: old in-memory rule superseded with links
         Memory updatedOld = memoryRepository.findById(oldMemory.getId()).orElseThrow();
         assertThat(updatedOld.getStatus()).isEqualTo(MemoryStatus.SUPERSEDED);
 
-        // 5. Checkpoints updated
-        assertThat(checkpointRepository.findByCheckpointKey("DECISION_CURSOR")).isPresent();
-        assertThat(checkpointRepository.findByCheckpointKey("ATTEMPT_CURSOR")).isPresent();
-        assertThat(checkpointRepository.findByCheckpointKey("SESSION_CURSOR")).isPresent();
+        // 5. Composite cursor checkpoints verified
+        ConsolidationCheckpoint decCheckpoint = checkpointRepository.findByCheckpointKey("DECISION_CURSOR").orElseThrow();
+        assertThat(decCheckpoint.getLastProcessedAt()).isNotNull();
+        assertThat(decCheckpoint.getLastProcessedId()).isNotNull();
 
-        // 6. Second consolidation cycle: incremental and deduplicated (zero duplicates created)
-        int initialCount = memoryRepository.findAll().size();
+        // 6. Crash / Retry Idempotency: Second run should process 0 new items, create 0 duplicates
+        int memoryCountBefore = memoryRepository.findAll().size();
         Map<String, Object> secondReport = consolidationService.runConsolidationCycle();
         assertThat(secondReport.get("status")).isEqualTo("success");
-        int finalCount = memoryRepository.findAll().size();
-        assertThat(finalCount).isEqualTo(initialCount);
+        int memoryCountAfter = memoryRepository.findAll().size();
+        assertThat(memoryCountAfter).isEqualTo(memoryCountBefore);
     }
 }

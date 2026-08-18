@@ -150,15 +150,20 @@ public class KnowledgeEvolutionWorker {
     }
 
     private int statusRank(MemoryStatus status) {
+        if (status == null) return 0;
         return switch (status) {
             case NEW -> 0;
+            case EXPERIMENT -> 0;
+            case PROPOSED -> 1;
             case OBSERVED -> 1;
             case CONFIRMED -> 2;
-            case FREQUENTLY_USED -> 3;
-            case STABLE -> 4;
+            case ESTABLISHED -> 3;
+            case FREQUENTLY_USED -> 4;
+            case STABLE -> 5;
             case DEPRECATED -> -1;
             case SUPERSEDED -> -2;
             case ARCHIVED -> -3;
+            case REJECTED -> -4;
         };
     }
 }
