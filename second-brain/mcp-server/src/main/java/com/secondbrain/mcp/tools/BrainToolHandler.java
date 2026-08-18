@@ -110,25 +110,13 @@ public class BrainToolHandler {
                     "Error: session_id is required for recording events")), true);
             }
 
-            AgentSession session = sessionRepository.findByIdForUpdate(UUID.fromString(sessionId))
-                .orElseThrow(() -> new RuntimeException("Session not found: " + sessionId));
-
-            long nextSeq = (session.getEventSequence() != null ? session.getEventSequence() : 0L) + 1L;
-            session.setEventSequence(nextSeq);
-            sessionRepository.save(session);
-
-            AgentEvent event = AgentEvent.builder()
-                .session(session)
-                .sequenceNumber(nextSeq)
-                .eventType(EventType.valueOf(eventType))
-                .description(description)
+            var payload = AgentBridgeService.SessionEventPayload.builder()
+                .eventType(eventType)
                 .filePath(filePath)
-                .processingStatus(status != null ? status : "COMPLETED")
                 .build();
-
-            eventRepository.save(event);
+            var res = agentBridgeService.appendSessionEvent(UUID.fromString(sessionId), payload);
             return new CallToolResult(List.of(new TextContent(
-                "Event recorded with ID: " + event.getId())), false);
+                "Event recorded successfully (Sequence #" + res.get("sequenceNumber") + ", Type: " + res.get("eventType") + ")")), false);
         } catch (Exception e) {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }
@@ -137,34 +125,15 @@ public class BrainToolHandler {
     public CallToolResult handleStartSession(String agentName, String task,
             String repositoryId, String projectId) {
         try {
-            Agent agent = agentRepository.findByName(agentName)
-                .orElseGet(() -> {
-                    Agent newAgent = Agent.builder()
-                        .name(agentName)
-                        .type(agentName)
-                        .build();
-                    return agentRepository.save(newAgent);
-                });
-
-            AgentSession session = AgentSession.builder()
-                .agent(agent)
+            var payload = AgentBridgeService.StartSessionPayload.builder()
+                .agentName(agentName)
                 .task(task)
-                .status("active")
-                .startedAt(LocalDateTime.now())
+                .repositoryIdOrPath(repositoryId)
+                .projectId(projectId)
                 .build();
-
-            if (repositoryId != null) {
-                repositoryRepository.findById(UUID.fromString(repositoryId))
-                    .ifPresent(session::setRepository);
-            }
-            if (projectId != null) {
-                projectRepository.findById(UUID.fromString(projectId))
-                    .ifPresent(session::setProject);
-            }
-
-            sessionRepository.save(session);
+            var res = agentBridgeService.startSession(payload);
             return new CallToolResult(List.of(new TextContent(
-                "Session started with ID: " + session.getId())), false);
+                "Session started with ID: " + res.get("sessionId") + " (Status: " + res.get("sessionStatus") + ")")), false);
         } catch (Exception e) {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }
@@ -172,14 +141,13 @@ public class BrainToolHandler {
 
     public CallToolResult handleEndSession(String sessionId, String summary) {
         try {
-            AgentSession session = sessionRepository.findById(UUID.fromString(sessionId))
-                .orElseThrow(() -> new RuntimeException("Session not found"));
-            session.setStatus("completed");
-            session.setSummary(summary);
-            session.setEndedAt(LocalDateTime.now());
-            sessionRepository.save(session);
+            var payload = AgentBridgeService.CompleteSessionPayload.builder()
+                .status("COMPLETED")
+                .summary(summary)
+                .build();
+            var res = agentBridgeService.completeSession(UUID.fromString(sessionId), payload);
             return new CallToolResult(List.of(new TextContent(
-                "Session ended: " + sessionId)), false);
+                "Session concluded successfully: " + sessionId + " (Status: " + res.get("sessionStatus") + ")")), false);
         } catch (Exception e) {
             return new CallToolResult(List.of(new TextContent("Error: " + e.getMessage())), true);
         }

@@ -3,164 +3,286 @@ name: second-brain
 description: >-
   Expert guide on efficiently utilizing the Second Brain platform for cross-agent memory,
   Graph-RAG code intelligence, AST symbol navigation, failure-attempt recall, and seamless
-  handoffs between Claude Code, Codex, Cursor, and other AI agents.
+  handoffs between Claude Code, Codex, Cursor, Qwen, and other AI agents.
 ---
 
-# Second Brain — Agent Operating Guide
+# Second Brain — Autonomous Agent Operating Protocol & Skill
 
-The **Second Brain** is your external, persistent cognitive architecture. It unifies structured memory, vector retrieval, knowledge graphs, and cross-agent telemetry across multiple codebases.
+The **Second Brain** is an external, persistent cognitive architecture. It unifies structured event memory, semantic vector retrieval, knowledge graphs, and cross-agent telemetry across all repositories and AI coding agents.
 
-When you work on any codebase connected to Second Brain, you are not starting from scratch: you have access to the cumulative decisions, lessons, architectural diagrams, call graphs, and trial history of all preceding AI agents and developers.
-
----
-
-## 1. Core Architecture & Storage Engines
-
-| Layer | Technology | Primary Role for AI Agents |
-| :--- | :--- | :--- |
-| **Canonical Memory** | **PostgreSQL** | Source of truth for memories, entities, decisions, tasks, attempts, and handoffs. |
-| **Vector Engine** | **Qdrant** | Semantic similarity search across 6 specialized collections (`code_symbols`, `declarative`, `procedural`, `episodic`, `documentation`, `agent_memory`). |
-| **Knowledge Graph** | **Neo4j** | Structural call graphs (`(:Function)-[:CALLS]->(:Function)`), API route mappings (`(:Endpoint)-[:MAPS_TO]->(:Function)`), and technology dependencies. |
-| **Hot Cache** | **Redis** | Active session state, debounce buffers, and fast retrieval caches. |
-| **Artifact Store** | **MinIO** | Architectural specs, PRDs, Markdown notes, PNG/SVG diagrams, and UI mockups. |
+When you (Claude Code, OpenAI Codex, Qwen, Cursor, or Antigravity) interact with a codebase connected to Second Brain, **you are not operating in isolation**. You have direct, low-latency access to the accumulated architectural decisions, failed attempts, call graphs, and handoff notes of every agent and human engineer that worked before you.
 
 ---
 
-## 2. Standard Agent Lifecycle Workflow
+## 1. Architectural Foundation & Multi-Engine Topology
 
-Follow this 4-step protocol on every engineering task:
+```text
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                              AI CODING AGENTS                                          │
+ │       Claude Code      •      OpenAI Codex      •      Cursor      •      Qwen         │
+ └──────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                            │ MCP Protocol / REST API
+                                            ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                           SECOND BRAIN TRANSACTION ENGINE                              │
+ │   ┌───────────────────────┐   ┌───────────────────────┐   ┌────────────────────────┐   │
+ │   │     AgentSession      │   │      AgentEvent       │   │      AgentOutbox       │   │
+ │   │ (IN_PROGRESS/COMPLETE)│   │(Ordered Sequence 1..N)│   │  (Idempotent & Async)  │   │
+ │   └───────────┬───────────┘   └───────────┬───────────┘   └───────────┬────────────┘   │
+ │               │                           │                           │                │
+ │               └───────────────────────────┼───────────────────────────┘                │
+ │                                           ▼                                            │
+ │                               POSTGRESQL SOURCE OF TRUTH                               │
+ │                                 (Serializable / ACID)                                  │
+ └───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                             │ Background Outbox Worker (SKIP LOCKED)
+                                             ▼
+ ┌────────────────────────────────────────────────────────────────────────────────────────┐
+ │                              PROJECTION & STORAGE ENGINES                              │
+ │   ┌───────────────────────┐   ┌───────────────────────┐   ┌────────────────────────┐   │
+ │   │    Neo4j Knowledge    │   │     Qdrant Vector     │   │      Redis / MinIO     │   │
+ │   │  Graph & Call Chains  │   │   Decision & Attempt  │   │   Hot Caches & Diagram │   │
+ │   │   (:Agent)-[:MADE]    │   │      Semantic RAG     │   │      Artifact Store    │   │
+ │   └───────────────────────┘   └───────────────────────┘   └────────────────────────┘   │
+ └────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 2. Standard 5-Phase Agent Cognitive Loop
+
+Every agent working with Second Brain MUST follow this 5-phase loop to guarantee zero context loss across agent handoffs:
 
 ```mermaid
 flowchart TD
-    A["1. Onboard / Context Retrieval"] --> B["2. Inspect Trials & Call Graphs"]
-    B --> C["3. Implement & Record Attempts"]
-    C --> D["4. Handoff & Memory Persistence"]
+    P1["Phase 1: Session Inception & Master Briefing\n(brain_start_session + brain_workspace_state)"] --> P2["Phase 2: Continuity & Failure Retrieval\n(brain_get_continuity_state + brain_query_agent_memory)"]
+    P2 --> P3["Phase 3: Graph-RAG AST & Code Navigation\n(brain_knowledge_graph + brain_search symbols)"]
+    P3 --> P4["Phase 4: Active Execution & Incremental Event Sourcing\n(brain_record_event: DECISION / FAILED_ATTEMPT / COMMIT)"]
+    P4 --> P5["Phase 5: Session Wrap-Up & Cross-Agent Handoff\n(brain_complete_session + rich handoff notes)"]
 ```
 
-### Phase 1: Onboarding & Continuity Retrieval (Start of Session)
+---
 
-Before modifying code or guessing architecture, retrieve the complete workspace state in **1 single call**:
+### Phase 1: Session Inception & Workspace Briefing (Start of Turn)
 
-1. **Get 1-Shot Master Workspace State**:
-   - **MCP Tool**: `brain_workspace_state(project="...", repository="...")`
-   - **REST API**: `GET /api/v1/bridge/workspace-state`
-   - **Yields**: Complete executive briefing including active project, workspace files, recent trials/failures, latest handoff, architectural decisions, and open tasks.
-2. **Review Specific Continuity / Attempts**:
-   - **MCP Tool**: `brain_get_continuity_state(repository_id_or_path=".")` or `brain_get_attempts(repository_id="...")`
-   - **Why**: Deep-dive into specific failure logs, error traces, and previous lessons learned.
-3. **Assemble Graph-RAG Context**:
-   - **MCP Tool**: `brain_get_context(query="your task description", repository_id="...")`
-   - **Why**: Simultaneously gathers relevant memories, Neo4j graph subgraphs, past decisions, and tasks.
+1. **Start Incremental Session**:
+   Register your active session immediately upon receiving a user prompt or agent handoff:
+   ```json
+   {
+     "tool": "brain_start_session",
+     "args": {
+       "agent_name": "Claude Code",
+       "task": "Migrate JWT authentication to Redis distributed token store",
+       "repository_id": "automorium-backend"
+     }
+   }
+   ```
+   *Yields*: `sessionId` and `sessionStatus = "IN_PROGRESS"`. Keep `sessionId` in your working memory.
+
+2. **Retrieve Master Workspace Briefing (1-Shot)**:
+   Obtain the repository overview, branch status, latest handoff, recent failures, and open tasks in **1 single call**:
+   ```json
+   {
+     "tool": "brain_workspace_state",
+     "args": {
+       "repository": "automorium-backend"
+     }
+   }
+   ```
 
 ---
 
-### Phase 2: Navigation & Code Intelligence
+### Phase 2: Historical Continuity & Failure Avoidance
 
-Instead of reading hundreds of source files into your context window:
+Before planning code edits or migrations, search past agent memory to avoid repeating known pitfalls:
 
-1. **Symbol-Level Code Search**:
-   - Search for specific function signatures, method docstrings, and endpoint definitions:
-     - `brain_search(query="authenticateUser token refresh", collection="code_symbols")`
-2. **Knowledge Graph Traversal**:
-   - Trace function call chains, callers/callees, and API endpoint routes:
-     - `brain_knowledge_graph(label="Function", id="com.example.service.AuthService.login", depth=2)`
-     - `brain_knowledge_graph(label="Endpoint", depth=1)`
-3. **Read Architectural Documentation & Diagrams**:
-   - Search specs, RFCs, and architecture diagrams:
-     - `brain_search(query="OAuth2 token refresh sequence diagram", collection="documentation")`
+1. **Recall Past Failed Attempts**:
+   ```json
+   {
+     "tool": "brain_get_attempts",
+     "args": {
+       "repository_id": "automorium-backend",
+       "limit": 10
+     }
+   }
+   ```
+   *Critical Rule*: If a previous agent (e.g. Codex or Cursor) attempted a solution that produced `status = "FAILED"`, inspect the `lessonLearned` and `errorMessage` before attempting a similar direction.
+
+2. **Semantic Memory & Decision Search**:
+   ```json
+   {
+     "tool": "brain_search",
+     "args": {
+       "query": "Redis token blacklist clustering invalidation",
+       "collection": "agent_memory"
+     }
+   }
+   ```
 
 ---
 
-### Phase 3: Trial Execution & Failure Recording (Active Work)
+### Phase 3: Graph-RAG AST & Structural Code Intelligence
 
-When working through complex refactors, migrations, or debugging:
+Avoid reading hundreds of source files into your LLM context window. Query the AST graph directly:
 
-1. **If an Approach or Test Fails**:
-   - **Do NOT silently discard the failure.** Record it so future agents (or yourself in the next prompt) know what happened:
-     ```json
-     {
-       "tool": "brain_record_attempt",
-       "args": {
-         "agent_name": "claude-code",
-         "task_description": "Implement distributed rate limiter",
-         "approach": "In-memory Token Bucket filter",
-         "status": "FAILURE",
-         "error_message": "State lost on multi-instance deployment; Redis connection timeout",
-         "lesson_learned": "Must use Redis Lua script for atomic sliding window rate limiting",
-         "files_changed": ["src/main/java/com/app/filter/RateLimitFilter.java"]
+1. **Symbol Search**:
+   Find exact method declarations, class signatures, and route handlers:
+   ```json
+   {
+     "tool": "brain_search",
+     "args": {
+       "query": "JwtAuthenticationFilter validateToken",
+       "collection": "code_symbols"
+     }
+   }
+   ```
+
+2. **Knowledge Graph Call-Chain Traversal**:
+   Trace callers, callees, and impacted dependencies:
+   ```json
+   {
+     "tool": "brain_knowledge_graph",
+     "args": {
+       "label": "Function",
+       "id": "com.secondbrain.service.AuthService.login",
+       "depth": 2
+     }
+   }
+   ```
+
+3. **Breaking Change Impact Analysis**:
+   Before modifying a core interface or shared entity:
+   ```json
+   {
+     "tool": "brain_impact_analysis",
+     "args": {
+       "file_path": "src/main/java/com/secondbrain/service/AuthService.java",
+       "diff": "..."
+     }
+   }
+   ```
+
+---
+
+### Phase 4: Active Execution & Incremental Event Sourcing
+
+As you work, stream incremental events into the durable PostgreSQL log. Second Brain's Outbox engine will asynchronously project them to Neo4j and Qdrant in the background.
+
+1. **When a Significant Decision is Made**:
+   ```json
+   {
+     "tool": "brain_record_event",
+     "args": {
+       "session_id": "<SESSION_UUID>",
+       "event_type": "DECISION",
+       "decision": {
+         "title": "Redis-backed Sliding Window Token Revocation",
+         "rationale": "In-memory token blacklist cannot scale horizontally across multi-instance pods"
        }
      }
-     ```
-2. **If an Approach Succeeds**:
-   - Record the working solution:
-     ```json
-     {
-       "tool": "brain_record_attempt",
-       "args": {
-         "agent_name": "claude-code",
-         "task_description": "Implement distributed rate limiter",
-         "approach": "Redis Sliding Window Lua script",
-         "status": "SUCCESS",
-         "lesson_learned": "Sliding window Lua script passed concurrency tests with 10k req/s",
-         "files_changed": ["src/main/java/com/app/filter/RedisRateLimiter.java"]
+   }
+   ```
+
+2. **When a Trial or Test Produces an Error**:
+   *Do NOT discard failures silently.* Recording failures prevents subsequent prompts and peer agents from looping into the same dead end:
+   ```json
+   {
+     "tool": "brain_record_event",
+     "args": {
+       "session_id": "<SESSION_UUID>",
+       "event_type": "FAILED_ATTEMPT",
+       "failed_attempt": {
+         "task": "Multi-instance clustering test",
+         "approach": "In-memory ConcurrentHashMap blacklist",
+         "errorMessage": "Tokens invalidated on Pod A still accepted by Pod B",
+         "lessonLearned": "Requires distributed key-value store with atomic Redis TTL expiration"
        }
      }
-     ```
+   }
+   ```
+
+3. **When Files are Touched or Commits are Produced**:
+   ```json
+   {
+     "tool": "brain_record_event",
+     "args": {
+       "session_id": "<SESSION_UUID>",
+       "event_type": "FILE_TOUCHED",
+       "file_path": "src/main/java/com/secondbrain/config/RedisConfig.java"
+     }
+   }
+   ```
+   ```json
+   {
+     "tool": "brain_record_event",
+     "args": {
+       "session_id": "<SESSION_UUID>",
+       "event_type": "COMMIT",
+       "commit": {
+         "hash": "3a9f0e1",
+         "message": "feat(auth): configure Redis clustered connection factory"
+       }
+     }
+   }
+   ```
 
 ---
 
-### Phase 4: Session Wrap-Up & Cross-Agent Handoff
+### Phase 5: Session Wrap-Up & Cross-Agent Handoff (End of Turn)
 
-When completing your turn or switching tasks:
+Always conclude your session cleanly by writing structured handoff notes for the next agent:
 
-1. **Record Architectural Decisions**:
-   - If you chose a library, pattern, or database schema:
-     - `brain_record_decision(title="Use PostgreSQL for Refresh Tokens", description="Store hashed refresh tokens in Postgres with JPA optimistic locking", rationale="Guarantees ACID compliance and persistence across restarts")`
-2. **Create Agent Handoff**:
-   - Hand off to the next agent (e.g. Codex, Cursor, or your next session):
-     - `brain_create_handoff(from_agent="claude-code", to_agent="codex", task_summary="Implemented token refresh service", files_modified=["RefreshTokenService.java", "RefreshTokenRepository.java"], completed_items=["Schema migration", "Service logic"], pending_items=["Controller endpoint", "Integration tests"], key_decisions=["Postgres persistence"])`
-3. **Log Open Tasks**:
-   - If tasks remain:
-     - `brain_create_task(title="Add integration test for OAuth2 refresh endpoint", description="Verify token expiration and revocation flows", priority=2)`
+```json
+{
+  "tool": "brain_complete_session",
+  "args": {
+    "session_id": "<SESSION_UUID>",
+    "status": "COMPLETED",
+    "summary": "Completed Redis token store configuration and updated JwtFilter.",
+    "handoff": {
+      "targetAgent": "Codex",
+      "task": "JWT Redis Token Rotation",
+      "completedItems": "RedisConfig, JwtFilter token check, and AuthService token rotation",
+      "inProgressItems": "Integration test suite for expired refresh token rejection",
+      "blockedItems": "None",
+      "nextSteps": "Add multi-instance test verifying expired refresh token rejection in Redis mock"
+    }
+  }
+}
+```
 
 ---
 
-## 3. Tool Quick Reference Table
+## 3. Comprehensive MCP Tool Reference
 
-| Goal | Primary MCP Tool | REST Equivalent |
+| MCP Tool Name | Description & Use Case | Key Arguments |
 | :--- | :--- | :--- |
-| **Create Project / Ingest Repo** | `brain_create_project(name, git_repo)` | `POST /api/v1/projects/create-with-repo` |
-| **List All Projects** | `brain_list_projects()` | `GET /api/v1/projects` |
-| **Inspect Project Details** | `brain_get_project(project)` | `GET /api/v1/projects/{id}` |
-| **Switch / Work on Project** | `brain_use_project(project, agent_name, task)` | `POST /api/v1/sessions` |
-| **Master Workspace State (1-Shot)** | `brain_workspace_state(project, repository)` | `GET /api/v1/bridge/workspace-state` |
-| **Get Full Task Context** | `brain_get_context(query, repository_id)` | `POST /api/v1/context/assemble` |
-| **Get Continuity Snapshot** | `brain_get_continuity_state(repo_path)` | `GET /api/v1/bridge/continuity?repo=...` |
-| **Check Previous Attempts** | `brain_get_attempts(repository_id, limit)` | `GET /api/v1/bridge/attempts` |
-| **Log Trial / Failure** | `brain_record_attempt(...)` | `POST /api/v1/bridge/attempts` |
-| **Search Code Symbols** | `brain_search(query, collection="code_symbols")` | `GET /api/v1/memory/symbols?q=...` |
-| **Search Documentation** | `brain_search(query, collection="documentation")` | `GET /api/v1/documents` |
-| **Query Knowledge Graph** | `brain_knowledge_graph(label, id, depth)` | `GET /api/v1/graph/visual` |
-| **Breaking Change Impact Analysis** | `brain_impact_analysis(file_path, diff)` | `POST /api/v1/intel/impact-analysis` |
-| **Graph-Augmented Code Review** | `brain_review_changes(working_tree_diff)` | `POST /api/v1/intel/review` |
-| **Ingest Architecture Diagram** | `brain_ingest_diagram(diagram_text)` | `POST /api/v1/intel/ingest-diagram` |
-| **Save Learned Memory** | `brain_store_memory(content, type, scope)` | `POST /api/v1/memory` |
-| **Record Tech Decision** | `brain_record_decision(title, rationale)` | `POST /api/v1/decisions` |
-| **Create Agent Handoff** | `brain_create_handoff(from, to, summary)` | `POST /api/v1/handoffs` |
-| **Add / Index Repository** | `brain_add_repository(url, project_id)` | `POST /api/v1/repository-intel/add-url` |
-| **Run Health Diagnostics** | `brain_doctor()` | `GET /actuator/health` |
+| `brain_start_session` | Begins an incremental agent session with durable sequence tracking. | `agent_name`, `task`, `repository_id`, `project_id` |
+| `brain_workspace_state` | 1-shot master workspace briefing (repo, handoffs, failures, decisions). | `repository`, `project` |
+| `brain_record_event` | Durable append-only event (`DECISION`, `FAILED_ATTEMPT`, `COMMIT`, `FILE_TOUCHED`). | `session_id`, `event_type`, `decision`, `failed_attempt`, `commit`, `file_path` |
+| `brain_complete_session` | Concludes active session with status (`COMPLETED`/`FAILED`) and handoff payload. | `session_id`, `status`, `summary`, `handoff` |
+| `brain_get_handoff` | Fetches the most recent handoff briefing for a repository. | `repository_id` |
+| `brain_get_agent_timeline` | Retrieves chronological timeline of all agents' sessions and achievements. | `repo`, `limit` |
+| `brain_get_attempts` | Queries recent failed and successful attempts with lessons learned. | `repository_id`, `limit` |
+| `brain_search` | Hybrid semantic vector search across 6 specialized collections. | `query`, `collection` (`code_symbols`, `agent_memory`, `documentation`), `limit` |
+| `brain_knowledge_graph` | Graph traversal for classes, functions, and endpoints. | `label`, `id`, `depth` |
+| `brain_impact_analysis` | Evaluates blast radius and downstream callers of a diff. | `file_path`, `diff` |
+| `brain_review_changes` | Graph-augmented automated code review on current working tree. | `working_tree_diff` |
+| `brain_store_memory` | Saves high-level architectural memory or developer preference. | `content`, `type`, `scope`, `tags` |
+| `brain_record_decision` | Directly records standalone architectural decision. | `title`, `rationale`, `project_id`, `repository_id` |
+| `brain_doctor` | Runs deep multi-service health and diagnostic check. | *None* |
 
 ---
 
-## 4. Dos and Don'ts for Maximum Efficiency
+## 4. Agent Best Practices & Operational Invariants
 
-### ✅ DO:
-- **Query `brain_get_continuity_state` first** whenever entering an existing codebase.
-- **Search symbol vectors** (`brain_search(..., collection="code_symbols")`) before grepping thousands of files.
-- **Record both failed and successful attempts** with clear lessons learned.
-- **Store durable architectural decisions** when introducing new libraries or database entities.
+### ✅ Mandatory Rules:
+1. **Always start a session** with `brain_start_session` at the beginning of non-trivial tasks.
+2. **Read previous handoffs** (`brain_workspace_state` or `brain_get_handoff`) to continue seamlessly from the exact state where the previous agent stopped.
+3. **Record every failed attempt** (`FAILED_ATTEMPT`) with a concise `lessonLearned` before attempting an alternative approach.
+4. **Write explicit next steps in your handoff** (`brain_complete_session`) so the incoming agent knows precisely which files to edit next.
 
-### ❌ DO NOT:
-- **Do not guess codebase structure** when Neo4j knowledge graph (`brain_knowledge_graph`) can give you exact call chains and routes.
-- **Do not repeat failed trials** that are already documented in `brain_get_attempts`.
-- **Do not leave silent uncommitted progress** without logging an event or handoff.
+### ❌ Prohibited Patterns:
+1. **Do NOT guess repository architecture** by grepping thousands of files when Neo4j call graphs (`brain_knowledge_graph`) and symbol vectors (`brain_search`) give exact relations.
+2. **Do NOT repeat known failing trials** without modifying the approach based on recorded lessons.
+3. **Do NOT leave an active session hanging** without calling `brain_complete_session`.
